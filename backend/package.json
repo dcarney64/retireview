@@ -1,0 +1,31 @@
+{
+  "name": "@project-skeleton/backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "argon2": "^0.45.1",
+    "bcrypt": "^5.1.1",
+    "connect-timeout": "^1.9.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.6.2",
+    "geoip-lite": "^2.0.3",
+    "helmet": "^8.3.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^9.0.4",
+    "otpauth": "^9.5.1",
+    "pg": "^8.13.1",
+    "qrcode": "^1.5.4",
+    "zxcvbn": "^4.4.2"
+  }
+}

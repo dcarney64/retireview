@@ -1,0 +1,413 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   ProjectName - Design System
+   CSS custom properties for theming.
+   Dark mode is default. Light mode applied via .light class on <html>.
+   ============================================================ */
+
+/* -- Dark Theme (default) -- */
+:root {
+  color-scheme: dark;
+
+  /* Backgrounds */
+  --color-bg: #0f172a;
+  /* slate-950 - app background */
+  --color-surface: #1e293b;
+  /* slate-800 - cards, panels */
+  --color-surface-2: #334155;
+  /* slate-700 - hover states */
+  --color-sidebar: #0f172a;
+  /* sidebar background */
+  --color-border: #334155;
+  /* slate-700 - borders */
+  --color-border-subtle: #1e293b;
+  /* slate-800 - subtle borders */
+
+  /* Text */
+  --color-text: #f1f5f9;
+  /* slate-100 - primary text */
+  --color-text-2: #94a3b8;
+  /* slate-400 - secondary text */
+  --color-text-3: #64748b;
+  /* slate-500 - muted text */
+  --color-text-inverse: #0f172a;
+  /* dark text on light bg */
+
+  /* Brand */
+  --color-primary: #0ea5e9;
+  /* sky-500 */
+  --color-primary-hover: #0284c7;
+  /* sky-600 */
+  --color-primary-subtle: #0ea5e91a;
+  /* sky-500/10 */
+
+  /* Semantic */
+  --color-success: #22c55e;
+  /* green-500 */
+  --color-success-subtle: #22c55e1a;
+  --color-warning: #f59e0b;
+  /* amber-500 */
+  --color-warning-subtle: #f59e0b1a;
+  --color-danger: #ef4444;
+  /* red-500 */
+  --color-danger-subtle: #ef44441a;
+  --color-info: #0ea5e9;
+  /* sky-500 */
+  --color-info-subtle: #0ea5e91a;
+
+  /* Financial colors */
+  --color-gain: #22c55e;
+  /* green - positive P&L */
+  --color-loss: #ef4444;
+  /* red - negative P&L */
+  --color-neutral: #94a3b8;
+  /* slate-400 - zero/neutral */
+  --color-cash: #38bdf8;
+  /* sky-400 - cash */
+  --color-gold: #f59e0b;
+  /* amber-500 - accent gold */
+
+  /* Account colors */
+  --color-account-cash: #38bdf8;
+  /* sky-400 */
+  --color-account-roth: #4ade80;
+  /* green-400 */
+  --color-account-ira: #facc15;
+  /* yellow-400 */
+
+  /* Status colors (watchlist) */
+  --color-watching: #38bdf8;
+  /* blue */
+  --color-building: #facc15;
+  /* yellow */
+  --color-ready: #4ade80;
+  /* green */
+  --color-flagged: #f87171;
+  /* red */
+  --color-promoted: #94a3b8;
+  /* slate */
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+
+  /* Spacing */
+  --sidebar-width: 220px;
+  --topbar-height: 56px;
+
+  /* Typography */
+  --font-sans: 'Plus Jakarta Sans', 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: 'Plus Jakarta Sans', sans-serif;
+}
+
+/* -- Light Theme -- */
+html.light {
+  color-scheme: light;
+
+  /* Backgrounds */
+  --color-bg: #f8fafc;
+  /* slate-50 */
+  --color-surface: #ffffff;
+  /* white */
+  --color-surface-2: #f1f5f9;
+  /* slate-100 */
+  --color-sidebar: #1e293b;
+  /* keep sidebar dark in light mode */
+  --color-border: #e2e8f0;
+  /* slate-200 */
+  --color-border-subtle: #f1f5f9;
+  /* slate-100 */
+
+  /* Text */
+  --color-text: #0f172a;
+  /* slate-950 */
+  --color-text-2: #475569;
+  /* slate-600 */
+  --color-text-3: #94a3b8;
+  /* slate-400 */
+  --color-text-inverse: #f1f5f9;
+
+  /* Brand - same in both themes */
+  --color-primary: #0284c7;
+  /* sky-600 (darker for light bg) */
+  --color-primary-hover: #0369a1;
+  --color-primary-subtle: #0ea5e91a;
+
+  /* Semantic - slightly adjusted for light */
+  --color-success: #16a34a;
+  /* green-600 */
+  --color-success-subtle: #dcfce7;
+  --color-warning: #d97706;
+  /* amber-600 */
+  --color-warning-subtle: #fef3c7;
+  --color-danger: #dc2626;
+  /* red-600 */
+  --color-danger-subtle: #fee2e2;
+
+  /* Financial - same */
+  --color-gain: #16a34a;
+  --color-loss: #dc2626;
+  --color-neutral: #64748b;
+  --color-cash: #0284c7;
+
+  /* Shadows - lighter */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+}
+
+/* -- Base styles -- */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* -- Typography -- */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+/* -- Monospace numbers -- */
+.font-mono,
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- Financial value colors -- */
+.text-gain {
+  color: var(--color-gain);
+}
+
+.text-loss {
+  color: var(--color-loss);
+}
+
+.text-cash {
+  color: var(--color-cash);
+}
+
+.text-gold {
+  color: var(--color-gold);
+}
+
+/* -- Scrollbar styling -- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-3);
+}
+
+/* -- Focus styles -- */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* -- Selection -- */
+::selection {
+  background: var(--color-primary-subtle);
+  color: var(--color-text);
+}
+
+/* -- Transition defaults -- */
+.transition-theme {
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+/* -- Utility classes using CSS vars -- */
+.bg-surface {
+  background-color: var(--color-surface);
+}
+
+.bg-surface-2 {
+  background-color: var(--color-surface-2);
+}
+
+.border-subtle {
+  border-color: var(--color-border);
+}
+
+.text-primary {
+  color: var(--color-primary);
+}
+
+.text-muted {
+  color: var(--color-text-2);
+}
+
+.text-faint {
+  color: var(--color-text-3);
+}
+
+@keyframes indicator-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.indicator-dot {
+  animation: indicator-pulse 2s ease-in-out infinite;
+}
+
+.indicator-tooltip {
+  transition: opacity 150ms ease;
+}
+
+/* -- Resizable table column handles -- */
+.col-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 1;
+  user-select: none;
+  border-left: 2px solid var(--color-border);
+  transition: border-color 120ms ease;
+}
+
+.col-resize-handle:hover {
+  border-left-color: var(--color-primary);
+}
+
+.col-resize-handle.is-dragging {
+  border-left-color: var(--color-primary);
+}
+
+/* -- StrategyTable shared row styles -- */
+.st-row:hover {
+  background: var(--color-surface-2);
+}
+.st-row:hover .st-frozen-cell {
+  background: var(--color-surface-2) !important;
+}
+.st-row.is-selected {
+  background: var(--color-primary-subtle);
+}
+.st-row.is-selected td:first-child {
+  border-left: 3px solid var(--color-primary);
+}
+.st-row.is-selected .st-frozen-cell {
+  background: var(--color-primary-subtle) !important;
+}
+/* Default frozen cell background (matches --color-surface) */
+.st-frozen-cell {
+  background: var(--color-surface);
+}
+
+/* -- Portfolio Report printing -- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #portfolio-report,
+  #portfolio-report * {
+    visibility: visible;
+  }
+
+  #portfolio-report {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    background: #ffffff !important;
+    color: #000000 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    overflow: visible !important;
+  }
+}
+
+/* 2FA OTP input error shake */
+@keyframes otp-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-5px); }
+  80% { transform: translateX(5px); }
+}
+
+.otp-shake {
+  animation: otp-shake 0.4s ease-in-out;
+}

@@ -1,0 +1,27 @@
+# Environment — never commit secrets
+.env
+*.env.local
+
+# Node
+node_modules/
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Process IDs
+*.pid
+scripts/*.pid
+
+# Backups
+backups/
+
+# Windows zone identifiers (WSL)
+*.Zone.Identifier
+*:Zone.Identifier
+
+# OS
+.DS_Store
+Thumbs.db

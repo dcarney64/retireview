@@ -1,0 +1,70 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: projectname_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-projectname_db}
+      - POSTGRES_USER=${DB_USER:-projectname}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Exposed on the host for psql / GUI tools; remove if not needed
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-projectname} -d ${DB_NAME:-projectname_db}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: projectname_backend
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - NODE_ENV=production
+      - PORT=8004
+      - HOST=0.0.0.0
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-projectname_db}
+      - DB_USER=${DB_USER:-projectname}
+      - DB_PASSWORD=${DB_PASSWORD:-changeme}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme123}
+      - APP_ENCRYPTION_KEY=${APP_ENCRYPTION_KEY}
+      - PASSWORD_PEPPER=${PASSWORD_PEPPER}
+      - OTP_PEPPER=${OTP_PEPPER}
+      - TWO_FA_ENABLED=${TWO_FA_ENABLED:-false}
+      - DEV_MODE_LOG_OTP=${DEV_MODE_LOG_OTP:-true}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=/api
+    container_name: projectname_frontend
+    restart: unless-stopped
+    ports:
+      - "51176:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

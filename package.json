@@ -1,0 +1,25 @@
+{
+  "name": "project-skeleton",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "start": "bash scripts/start.sh",
+    "stop": "bash scripts/stop.sh",
+    "status": "bash scripts/status.sh",
+    "restart": "bash scripts/restart.sh",
+    "dev:backend": "cd backend && node --watch src/index.js",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "kill": "bash scripts/kill.sh",
+    "ports": "bash scripts/check-ports.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
