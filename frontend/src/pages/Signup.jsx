@@ -41,7 +41,7 @@ export default function Signup() {
       <Card className="w-full max-w-md border-slate-700 bg-slate-800 text-white">
         <div className="mb-6 text-center">
           {/* TODO: replace with your app name */}
-          <h1 className="mb-2 text-3xl font-semibold tracking-tight text-white">ProjectName</h1>
+          <h1 className="mb-2 text-3xl font-semibold tracking-tight text-white">RetireView</h1>
           <p className="text-sm text-slate-300">Create your account</p>
         </div>
 

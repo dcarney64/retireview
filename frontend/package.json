@@ -1,12 +1,12 @@
 {
-  "name": "@project-skeleton/frontend",
+  "name": "@retireview/frontend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --port 5176 --strictPort",
+    "dev": "vite --port 5178 --strictPort",
     "build": "vite build",
-    "preview": "vite preview --port 5176 --strictPort"
+    "preview": "vite preview --port 5178 --strictPort"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.9",
@@ -16,6 +16,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
+    "recharts": "^2.13.3",
     "tailwind-merge": "^2.5.5",
     "zustand": "^5.0.1",
     "zxcvbn": "^4.4.2"

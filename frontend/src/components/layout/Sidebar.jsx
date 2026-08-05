@@ -2,10 +2,10 @@ import { Link, useLocation } from 'react-router-dom';
 
 import { useAuthStore } from '../../store/authStore';
 
-// TODO: replace with your app's navigation
 const mainItems = [
   { label: 'Dashboard', path: '/' },
-  // { label: 'Your Page', path: '/your-page' },
+  { label: 'Accounts', path: '/accounts' },
+  { label: 'Goal', path: '/goal' },
 ];
 
 const secondaryItems = [

@@ -18,7 +18,10 @@ export function issueAccessToken(user) {
 
 export function issueRefreshToken(user) {
     return jwt.sign(
-        { sub: user.id },
+        // jti makes every token unique: without it, two logins in the same
+        // second mint identical JWTs (same sub + iat) and the second insert
+        // violates the refresh_tokens.token_hash unique constraint.
+        { sub: user.id, jti: crypto.randomUUID() },
         process.env.JWT_REFRESH_SECRET,
         { expiresIn: process.env.JWT_REFRESH_EXPIRES || REFRESH_DEFAULT_EXPIRY }
     );

@@ -38,7 +38,7 @@ export async function sendOTPEmail(toEmail, code, ipAddress) {
 
     const html = `
     <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
-      <h2 style="color: #0f172a;">ProjectName Login Verification</h2>
+      <h2 style="color: #0f172a;">RetireView Login Verification</h2>
       <p>Your verification code is:</p>
       <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #3b82f6; padding: 16px 0;">${code}</div>
       <p>This code expires in 10 minutes.</p>
@@ -48,7 +48,7 @@ export async function sendOTPEmail(toEmail, code, ipAddress) {
       </p>
     </div>
     `;
-    await send(toEmail, 'ProjectName Login Verification Code', { html });
+    await send(toEmail, 'RetireView Login Verification Code', { html });
 }
 
 export async function sendSecurityAlert(toEmail, alertType, details) {
@@ -58,9 +58,9 @@ export async function sendSecurityAlert(toEmail, alertType, details) {
     }
 
     const subjects = {
-        new_ip: 'New login location detected — ProjectName',
-        impossible_travel: 'Unusual login detected — ProjectName',
-        account_blocked: 'Your account has unusual activity — ProjectName',
+        new_ip: 'New login location detected — RetireView',
+        impossible_travel: 'Unusual login detected — RetireView',
+        account_blocked: 'Your account has unusual activity — RetireView',
     };
 
     const messages = {
@@ -103,5 +103,5 @@ export async function sendNewIPAlert(toEmail, ipAddress) {
       </p>
     </div>
     `;
-    await send(toEmail, 'New login location detected — ProjectName', { html });
+    await send(toEmail, 'New login location detected — RetireView', { html });
 }

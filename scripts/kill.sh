@@ -1,58 +1,54 @@
 #!/bin/bash
-# ProjectName — Nuclear kill. Use when stop.sh doesn't work.
-# Kills ALL processes related to this project by port and name.
+# RetireView — Nuclear kill. Use when stop.sh doesn't work.
+# Force-stops this project's containers and bare-metal processes ONLY —
+# never touches other projects' node/vite processes.
 
-echo "💣 Nuclear kill — terminating all project processes..."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+echo "💣 Force-stopping RetireView..."
 echo ""
 
-# Kill by port
-for PORT in 8004 5176; do
+# Docker containers first (force, no grace period)
+if command -v docker >/dev/null 2>&1; then
+  RUNNING=$(cd "$ROOT" && docker compose ps -q 2>/dev/null)
+  if [ -n "$RUNNING" ]; then
+    echo "→ Killing Docker stack"
+    (cd "$ROOT" && docker compose down -t 0) && echo "✓ Containers stopped"
+  else
+    echo "✓ No containers running"
+  fi
+fi
+
+# Bare-metal processes — matched by this project's path, not by generic names
+for PATTERN in "$ROOT/backend" "$ROOT/node_modules/.bin/vite" "scripts/dev-frontend.sh"; do
+  PIDS=$(pgrep -f "$PATTERN" 2>/dev/null)
+  if [ -n "$PIDS" ]; then
+    echo "→ Killing processes matching $PATTERN (PIDs: $PIDS)"
+    echo "$PIDS" | xargs kill -KILL 2>/dev/null
+  fi
+done
+
+# Anything still holding our ports that we own
+for PORT in 8006 5178; do
   PIDS=$(lsof -ti:$PORT 2>/dev/null)
-  if [ ! -z "$PIDS" ]; then
-    echo "→ Killing PIDs on port $PORT: $PIDS"
-    echo $PIDS | xargs kill -KILL 2>/dev/null
-    echo "✓ Port $PORT cleared"
-  else
-    echo "✓ Port $PORT already free"
+  if [ -n "$PIDS" ]; then
+    echo "→ Clearing port $PORT (PIDs: $PIDS)"
+    echo "$PIDS" | xargs kill -KILL 2>/dev/null || echo "  (some PIDs not ours — likely docker-proxy; run docker compose down)"
   fi
 done
 
-# Kill by process name
-declare -A PROCS=(
-  ["node --watch"]="Backend watcher"
-  ["vite"]="Frontend dev server"
-  ["esbuild"]="ESBuild process"
-)
-
-for PROC in "${!PROCS[@]}"; do
-  NAME=${PROCS[$PROC]}
-  PIDS=$(pgrep -f "$PROC" 2>/dev/null)
-  if [ ! -z "$PIDS" ]; then
-    echo "→ Killing $NAME (PIDs: $PIDS)"
-    echo $PIDS | xargs kill -KILL 2>/dev/null
-    echo "✓ $NAME killed"
-  else
-    echo "✓ $NAME not running"
-  fi
-done
-
-# Remove stale PID files
-rm -f scripts/.backend.pid scripts/.frontend.pid
+rm -f "$ROOT/scripts/.backend.pid" "$ROOT/scripts/.frontend.pid"
 echo "✓ PID files cleared"
 
-# Verify ports are free
 echo ""
 echo "Port status after kill:"
-for PORT in 8004 5176; do
-  PIDS=$(lsof -ti:$PORT 2>/dev/null)
-  if [ ! -z "$PIDS" ]; then
-    echo "  ✗ Port $PORT still occupied by PID $PIDS"
-    echo "    Try: sudo kill -KILL $PIDS"
+for PORT in 8006 5178; do
+  if [ -n "$(lsof -ti:$PORT 2>/dev/null)" ]; then
+    echo "  ✗ Port $PORT still occupied"
   else
-    echo "  ✓ Port $PORT is free"
+    echo "  ✓ Port $PORT free"
   fi
 done
 
 echo ""
-echo "💣 Nuclear kill complete"
-echo "   Run npm start to restart"
+echo "💣 Done"

@@ -7,7 +7,9 @@ import Layout from './components/layout/Layout';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import SecurityDashboard from './pages/admin/SecurityDashboard';
 import UserManagement from './pages/admin/UserManagement';
+import Accounts from './pages/Accounts';
 import Dashboard from './pages/Dashboard';
+import Goal from './pages/Goal';
 import Login from './pages/Login';
 import Settings from './pages/Settings';
 import Signup from './pages/Signup';
@@ -41,6 +43,8 @@ export default function App() {
 
         <Route path="/" element={<AppShell><Page><Dashboard /></Page></AppShell>} />
         {/* ADD YOUR APP ROUTES BELOW THIS LINE */}
+        <Route path="/accounts" element={<AppShell><Page><Accounts /></Page></AppShell>} />
+        <Route path="/goal" element={<AppShell><Page><Goal /></Page></AppShell>} />
 
         <Route path="/settings" element={<AppShell><Page><Settings /></Page></AppShell>} />
 

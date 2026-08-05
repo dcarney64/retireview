@@ -1,4 +1,4 @@
-# ProjectSkeleton
+# RetireView
 
 A reusable full-stack starter: Express + PostgreSQL backend and React (Vite +
 Tailwind) frontend, with a complete auth and security layer already wired up.
@@ -22,9 +22,9 @@ Tailwind) frontend, with a complete auth and security layer already wired up.
 
 1. Copy this folder and rename it to your project.
 2. Find & replace the placeholders:
-   - `ProjectName` → your app's display name (page titles, emails, UI)
-   - `projectname` → your app's slug (DB name, container names, storage keys)
-   - `project-skeleton` → your package name (all three `package.json` files)
+   - `RetireView` → your app's display name (page titles, emails, UI)
+   - `retireview` → your app's slug (DB name, container names, storage keys)
+   - `retireview` → your package name (all three `package.json` files)
 3. `cp .env.example .env` and generate real secrets (each variable has a
    comment explaining how).
 4. Boot it (below), log in as the seed admin, change the password.
@@ -43,9 +43,9 @@ cp .env.example .env    # then fill in real secrets
 docker compose up --build
 ```
 
-- Frontend → http://localhost:51176
-- Backend → http://localhost:8004
-- Postgres → localhost:5432 (volume `pgdata`)
+- Frontend → http://localhost:5178
+- Backend → http://localhost:8006
+- Postgres → localhost:5437 (volume `pgdata`)
 
 The schema is applied automatically on backend boot (`src/db/migrate.js` runs
 `schema.sql`, which is idempotent). The seed admin (`ADMIN_EMAIL` /
@@ -59,7 +59,7 @@ immediately after first login**.
 npm install
 cp .env.example .env            # fill in secrets; set DB_HOST=localhost
 docker compose up -d db         # or point .env at your own Postgres
-npm run dev                     # backend :8004 + Vite :5176
+npm run dev                     # backend :8006 + Vite :5178
 ```
 
 For dev without SMTP, set `DEV_MODE_LOG_OTP=true` (OTP codes print to the

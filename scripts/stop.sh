@@ -1,7 +1,19 @@
 #!/bin/bash
-# ProjectName — Stop All Services
+# RetireView — Stop All Services
 
-echo "🛑 Stopping ProjectName..."
+echo "🛑 Stopping RetireView..."
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Docker stack first — its ports are held by root-owned docker-proxy
+# processes that kill(1) can't touch; docker compose down releases them.
+if command -v docker >/dev/null 2>&1; then
+  RUNNING=$(cd "$ROOT" && docker compose ps -q 2>/dev/null)
+  if [ -n "$RUNNING" ]; then
+    echo "→ Stopping Docker stack"
+    (cd "$ROOT" && docker compose down) && echo "✓ Docker stack stopped"
+  fi
+fi
 
 graceful_kill() {
   local PID=$1
@@ -67,15 +79,15 @@ clear_port() {
   fi
 }
 
-clear_port 8004
-clear_port 5176
+clear_port 8006
+clear_port 5178
 
 # Clean up orphaned processes from this project only (avoid killing other projects' Vite)
 pkill -f "$(basename "$(cd "$(dirname "$0")/.." && pwd)")/backend.*node --watch src/index.js" 2>/dev/null && \
   echo "✓ Cleared orphaned backend watchers" || true
-pkill -f "$(basename "$(cd "$(dirname "$0")/.." && pwd)")/node_modules/.bin/vite --port 5176" 2>/dev/null && \
+pkill -f "$(basename "$(cd "$(dirname "$0")/.." && pwd)")/node_modules/.bin/vite --port 5178" 2>/dev/null && \
   echo "✓ Cleared orphaned Vite" || true
 
 echo ""
-echo "✅ ProjectName stopped"
+echo "✅ RetireView stopped"
 

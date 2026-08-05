@@ -1,18 +1,28 @@
 #!/bin/bash
-# ProjectName — Start All Services (bare-metal dev; use `npm run docker:up` for Docker)
+# RetireView — Start All Services (bare-metal dev; use `npm run docker:up` for Docker)
 
 set -e
 
-echo "🚀 Starting ProjectName..."
+echo "🚀 Starting RetireView..."
 echo ""
 
 export NODE_ENV=production
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Bare-metal and Docker modes can't share ports — refuse to double-start
+if command -v docker >/dev/null 2>&1; then
+  RUNNING=$(cd "$ROOT" && docker compose ps -q --status running 2>/dev/null)
+  if [ -n "$RUNNING" ]; then
+    echo "✗ The Docker stack is already running (docker compose ps)."
+    echo "  Use it as-is, or stop it first:  npm run docker:down"
+    exit 1
+  fi
+fi
+
 # Read DB settings from .env (defaults if absent)
 DB_PORT=$(grep -E '^DB_PORT=' "$ROOT/.env" 2>/dev/null | cut -d= -f2)
-DB_PORT=${DB_PORT:-5432}
+DB_PORT=${DB_PORT:-5437}
 
 # Enforce secret file permissions on every start
 chmod 600 "$ROOT/.env" 2>/dev/null || true
@@ -31,7 +41,7 @@ fi
 echo "✓ PostgreSQL ready on port $DB_PORT"
 
 # Start backend in background (non-watch mode to avoid EPIPE crash loops)
-echo "→ Starting backend on port 8004..."
+echo "→ Starting backend on port 8006..."
 cd "$ROOT"
 nohup npm --prefix backend run start >> logs/.backend.log 2>&1 < /dev/null &
 BACKEND_PID=$!
@@ -41,8 +51,8 @@ echo $BACKEND_PID > scripts/.backend.pid
 echo "→ Waiting for backend..."
 backend_ready=0
 for i in {1..20}; do
-  if curl -s http://localhost:8004/health > /dev/null 2>&1; then
-    echo "✓ Backend ready on port 8004"
+  if curl -s http://localhost:8006/health > /dev/null 2>&1; then
+    echo "✓ Backend ready on port 8006"
     backend_ready=1
     break
   fi
@@ -62,28 +72,28 @@ if [ "$backend_ready" -ne 1 ]; then
 fi
 
 # Start frontend with auto-restart on crash (OOM, etc.)
-echo "→ Starting frontend on port 5176 (auto-restart enabled)..."
-if lsof -ti:5176 >/dev/null 2>&1; then
-  echo "⚠️  Port 5176 already in use — skipping frontend start"
+echo "→ Starting frontend on port 5178 (auto-restart enabled)..."
+if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE '[:.]5178$'; then
+  echo "⚠️  Port 5178 already in use — skipping frontend start"
 else
   chmod +x scripts/dev-frontend.sh
   nohup bash scripts/dev-frontend.sh >> logs/.frontend.log 2>&1 < /dev/null &
   sleep 3
-  FRONTEND_PID=$(lsof -ti:5176 2>/dev/null | head -1)
+  FRONTEND_PID=$(lsof -ti:5178 2>/dev/null | head -1)
   if [ -n "$FRONTEND_PID" ]; then
-    echo "✓ Frontend ready on port 5176 (Vite PID $FRONTEND_PID)"
+    echo "✓ Frontend ready on port 5178 (Vite PID $FRONTEND_PID)"
     echo "  Supervisor PID $(cat scripts/.frontend.pid 2>/dev/null || echo '?') in scripts/.frontend.pid"
   else
-    echo "✗ Frontend did not bind to port 5176"
+    echo "✗ Frontend did not bind to port 5178"
     echo "  Check logs/.frontend.log for details"
     tail -30 logs/.frontend.log 2>/dev/null || true
   fi
 fi
 
 echo ""
-echo "✅ ProjectName is running!"
-echo "   Frontend → http://localhost:5176"
-echo "   Backend  → http://localhost:8004"
+echo "✅ RetireView is running!"
+echo "   Frontend → http://localhost:5178"
+echo "   Backend  → http://localhost:8006"
 echo "   Database → localhost:$DB_PORT"
 echo ""
 echo "   Run scripts/stop.sh to shut everything down"

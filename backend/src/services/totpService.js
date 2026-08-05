@@ -11,8 +11,8 @@ const TOTP_WINDOW = 1;
 
 function buildTOTP(secretBase32, label) {
     return new OTPAuth.TOTP({
-        issuer: 'ProjectName',
-        label: label || 'ProjectName',
+        issuer: 'RetireView',
+        label: label || 'RetireView',
         algorithm: 'SHA1',
         digits: 6,
         period: 30,

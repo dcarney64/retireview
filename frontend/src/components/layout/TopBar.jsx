@@ -13,7 +13,7 @@ export default function TopBar() {
     <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-800 bg-slate-950 px-6 py-4">
       <div className="flex items-center gap-3">
         {/* TODO: replace with your app name / logo */}
-        <h1 className="text-lg font-semibold text-slate-100">ProjectName</h1>
+        <h1 className="text-lg font-semibold text-slate-100">RetireView</h1>
       </div>
 
       <div className="flex items-center gap-2">

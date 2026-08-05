@@ -30,7 +30,7 @@ export default function PasswordStrengthMeter({ password, userInputs = [] }) {
       if (cancelled) return;
       setResult(zxcvbn(password, [
         ...userInputs.filter(Boolean),
-        'projectname', // TODO: add your app name and domain words
+        'retireview', // TODO: add your app name and domain words
       ]));
     });
     return () => { cancelled = true; };

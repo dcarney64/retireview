@@ -1,51 +1,48 @@
 #!/bin/bash
-# ProjectName — Check Status of All Services
+# RetireView — Check Status of All Services
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DB_PORT=$(grep -E '^DB_PORT=' "$ROOT/.env" 2>/dev/null | cut -d= -f2)
-DB_PORT=${DB_PORT:-5432}
-DB_NAME=$(grep -E '^DB_NAME=' "$ROOT/.env" 2>/dev/null | cut -d= -f2)
-DB_NAME=${DB_NAME:-projectname_db}
+DB_PORT=${DB_PORT:-5437}
 
-echo "📊 ProjectName Status"
+echo "📊 RetireView Status"
 echo "────────────────────────────────"
 
-# PostgreSQL
-if pg_isready -h localhost -p "$DB_PORT" -q; then
-  echo "✓ PostgreSQL    running on :$DB_PORT"
-else
-  echo "✗ PostgreSQL    NOT running on :$DB_PORT"
+# Docker containers (if the compose stack is in use)
+if command -v docker >/dev/null 2>&1; then
+  CONTAINERS=$(cd "$ROOT" && docker compose ps --format '{{.Name}}: {{.Status}}' 2>/dev/null)
+  if [ -n "$CONTAINERS" ]; then
+    echo "Containers:"
+    echo "$CONTAINERS" | sed 's/^/  /'
+  else
+    echo "Containers:   none running (bare-metal mode or stack down)"
+  fi
+  echo "────────────────────────────────"
 fi
 
-# Backend
-if curl -s http://localhost:8004/health > /dev/null 2>&1; then
-  echo "✓ Backend       running on :8004"
+# PostgreSQL
+if pg_isready -h localhost -p "$DB_PORT" -q 2>/dev/null; then
+  echo "✓ PostgreSQL    accepting connections on :$DB_PORT"
 else
-  echo "✗ Backend       NOT running on :8004"
+  echo "✗ PostgreSQL    NOT reachable on :$DB_PORT"
+fi
+
+# Backend health endpoint
+HEALTH=$(curl -s --max-time 3 http://localhost:8006/health 2>/dev/null)
+if [ "$HEALTH" = '{"status":"ok"}' ]; then
+  echo "✓ Backend       healthy on :8006"
+else
+  echo "✗ Backend       NOT healthy on :8006"
 fi
 
 # Frontend
-if curl -s http://localhost:5176 > /dev/null 2>&1; then
-  echo "✓ Frontend      running on :5176"
+if curl -s --max-time 3 -o /dev/null http://localhost:5178 2>/dev/null; then
+  echo "✓ Frontend      serving on :5178"
 else
-  echo "✗ Frontend      NOT running on :5176"
+  echo "✗ Frontend      NOT serving on :5178"
 fi
 
 echo "────────────────────────────────"
-
-# Database stats
-if pg_isready -h localhost -p "$DB_PORT" -q; then
-  echo ""
-  if sudo -n true 2>/dev/null; then
-    echo "Database tables:"
-    sudo -u postgres psql -p "$DB_PORT" -d "$DB_NAME" -c "
-      SELECT tablename,
-             pg_size_pretty(pg_total_relation_size(quote_ident(tablename))) as size
-      FROM pg_tables
-      WHERE schemaname = 'public'
-      ORDER BY tablename;
-    " 2>/dev/null || true
-  else
-    echo "  DB stats: (run with sudo for table sizes)"
-  fi
-fi
+echo "URLs:"
+echo "  Frontend → http://localhost:5178"
+echo "  Backend  → http://localhost:8006/health"

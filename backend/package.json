@@ -1,5 +1,5 @@
 {
-  "name": "@project-skeleton/backend",
+  "name": "@retireview/backend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -26,6 +26,7 @@
     "otpauth": "^9.5.1",
     "pg": "^8.13.1",
     "qrcode": "^1.5.4",
+    "snaptrade-typescript-sdk": "^11.0.4",
     "zxcvbn": "^4.4.2"
   }
 }

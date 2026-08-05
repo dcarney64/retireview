@@ -18,13 +18,13 @@ function BackupCodesGrid({ codes, onDone, doneLabel }) {
 
   const download = () => {
     const blob = new Blob(
-      [`ProjectName backup codes — keep these safe\n\n${codes.join('\n')}\n`],
+      [`RetireView backup codes — keep these safe\n\n${codes.join('\n')}\n`],
       { type: 'text/plain' }
     );
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'projectname-backup-codes.txt';
+    a.download = 'retireview-backup-codes.txt';
     a.click();
     URL.revokeObjectURL(url);
   };

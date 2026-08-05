@@ -5,7 +5,7 @@ import zxcvbn from 'zxcvbn';
 const MIN_SCORE = Number(process.env.MIN_PASSWORD_SCORE) || 3;
 const MIN_LENGTH = Number(process.env.MIN_PASSWORD_LENGTH) || 12;
 // TODO: add your app name and domain words so zxcvbn penalizes them
-const CONTEXT_WORDS = ['projectname'];
+const CONTEXT_WORDS = ['retireview'];
 
 export function validatePasswordStrength(password, userInputs = []) {
     const result = zxcvbn(password, [...userInputs.filter(Boolean), ...CONTEXT_WORDS]);

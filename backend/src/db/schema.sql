@@ -1,4 +1,4 @@
--- ProjectName starter schema
+-- RetireView starter schema
 -- Applied idempotently on every backend boot (see src/db/migrate.js).
 -- Contains only auth + security infrastructure. Add domain tables at the bottom.
 
@@ -144,3 +144,76 @@ CREATE INDEX IF NOT EXISTS idx_user_totp_user ON user_totp (user_id);
 -- ============================================================
 -- ADD YOUR APP TABLES BELOW THIS LINE
 -- ============================================================
+
+-- ============================================================
+-- ACCOUNTS
+-- One row per tracked account (brokerage, 401k, home equity, ...).
+-- Balances are updated in place; snapshots capture history.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS accounts (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  type        TEXT NOT NULL
+              CHECK (type IN ('brokerage', 'composer', 'retirement', 'pension',
+                              'real_estate', 'cash', 'other')),
+  balance     NUMERIC(14,2) NOT NULL DEFAULT 0,
+  notes       TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts (user_id);
+
+-- ============================================================
+-- SNAPSHOTS
+-- Point-in-time record of total net worth. One per user per day;
+-- re-snapshotting the same day replaces it.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS snapshots (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  total       NUMERIC(14,2) NOT NULL,
+  note        TEXT,
+  snapped_at  DATE NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, snapped_at)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_user_date ON snapshots (user_id, snapped_at DESC);
+
+-- Per-account balances captured with each snapshot
+CREATE TABLE IF NOT EXISTS account_snapshots (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  snapshot_id UUID NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+  account_id  UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  balance     NUMERIC(14,2) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_snapshots_snapshot ON account_snapshots (snapshot_id);
+
+-- ============================================================
+-- GOALS
+-- Retirement target. One per user (upserted from the Goal page).
+-- expected_return and amounts are stored as entered; the nest-egg
+-- math lives in the frontend calculator.
+-- ============================================================
+-- SnapTrade linkage (personal API key mode): synced accounts carry the
+-- SnapTrade account id and refresh their balance on sync; manual accounts
+-- have source='manual' and are never touched by sync.
+ALTER TABLE accounts
+  ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual',
+  ADD COLUMN IF NOT EXISTS external_id TEXT,
+  ADD COLUMN IF NOT EXISTS institution TEXT,
+  ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_external
+  ON accounts (user_id, external_id) WHERE external_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS goals (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id               UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  target_amount         NUMERIC(14,2) NOT NULL,
+  target_annual_income  NUMERIC(14,2),
+  retirement_years      INTEGER,
+  expected_return       NUMERIC(6,4),
+  ss_monthly            NUMERIC(14,2),
+  target_date           DATE,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);

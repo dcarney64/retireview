@@ -3,6 +3,8 @@ import cron from 'node-cron';
 import { query } from '../db/client.js';
 import { cleanupSecurityTables } from '../services/authSecurityService.js';
 import { cleanupExpiredTrustedIPs } from '../services/otpService.js';
+import { takeSnapshot } from '../services/snapshotService.js';
+import { isConfigured as snaptradeConfigured, syncAccountsForUser } from '../services/snaptradeService.js';
 
 // Nightly at 4:00 AM — prunes expired trusted IPs, stale OTPs, expired IP
 // blocks, and old login history (LOGIN_HISTORY_RETENTION_DAYS).
@@ -44,4 +46,42 @@ export async function initAllJobs() {
 
     // ADD YOUR APP JOBS BELOW THIS LINE, e.g.:
     // cron.schedule('0 2 * * *', runNightlySync);
+
+    if (snaptradeJob) snaptradeJob.stop();
+    snaptradeJob = cron.schedule(SNAPTRADE_SYNC_CRON, runSnapTradeSyncJob);
+}
+
+// Daily at 5:30 AM (SNAPTRADE_SYNC_CRON) — refreshes balances from SnapTrade
+// for every user who already has linked accounts (the first sync is always
+// triggered manually from the Accounts page), then auto-snapshots so the
+// net-worth history stays continuous. Skips quietly when not configured.
+const SNAPTRADE_SYNC_CRON = process.env.SNAPTRADE_SYNC_CRON || '30 5 * * *';
+
+let snaptradeJob = null;
+
+export async function runSnapTradeSyncJob() {
+    if (!snaptradeConfigured()) {
+        return;
+    }
+
+    try {
+        const users = await query(
+            `SELECT DISTINCT user_id FROM accounts WHERE source = 'snaptrade'`
+        );
+
+        for (const row of users.rows) {
+            try {
+                const summary = await syncAccountsForUser(row.user_id);
+                await takeSnapshot(row.user_id, 'auto: daily sync');
+                console.log(
+                    `[snaptrade] Synced user ${row.user_id}: ${summary.updated} updated, `
+                    + `${summary.created} created, ${summary.failures.length} failed`
+                );
+            } catch (error) {
+                console.error(`[snaptrade] Sync failed for user ${row.user_id}:`, error.message);
+            }
+        }
+    } catch (error) {
+        console.error('[snaptrade] Sync job failed:', error.message);
+    }
 }
