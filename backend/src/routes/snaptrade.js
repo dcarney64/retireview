@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { requireAdmin } from '../auth/middleware.js';
 import { query } from '../db/client.js';
+import { reconstructHistoryForUser } from '../services/historyReconstructService.js';
 import {
     getDashboardUrl,
     isConfigured,
@@ -62,8 +63,33 @@ router.post('/sync', requireAdmin, async (req, res) => {
             });
         }
 
+        // Detect first-ever sync (no snaptrade accounts yet) so we can trigger
+        // history reconstruction after the sync imports transaction history.
+        const existingResult = await query(
+            `SELECT 1 FROM accounts WHERE user_id = $1 AND source = 'snaptrade' LIMIT 1`,
+            [req.user.id]
+        );
+        const isFirstSync = existingResult.rowCount === 0;
+
         const summary = await syncAccountsForUser(req.user.id);
-        return res.json(summary);
+
+        // On the first sync, automatically reconstruct historical monthly snapshots
+        // from the transaction history that was just pulled, so the Performance page
+        // shows real data immediately instead of "not enough data".
+        let reconstruction = null;
+        if (isFirstSync && summary.txInserted > 0) {
+            try {
+                reconstruction = await reconstructHistoryForUser(req.user.id);
+                console.log(
+                    `[snaptrade] First sync reconstruction: ${reconstruction.monthsReconstructed} months, `
+                    + `${reconstruction.earliestDate} → ${reconstruction.latestDate}`
+                );
+            } catch (recErr) {
+                console.error('[snaptrade] First-sync reconstruction failed:', recErr.message);
+            }
+        }
+
+        return res.json({ ...summary, reconstruction });
     } catch (error) {
         return res.status(502).json({ error: upstreamError(error, 'SnapTrade sync failed') });
     }

@@ -2,8 +2,8 @@ import cron from 'node-cron';
 
 import { query } from '../db/client.js';
 import { cleanupSecurityTables } from '../services/authSecurityService.js';
+import { syncComposerAccountsForUser } from '../services/composerService.js';
 import { cleanupExpiredTrustedIPs } from '../services/otpService.js';
-import { takeSnapshot } from '../services/snapshotService.js';
 import { isConfigured as snaptradeConfigured, syncAccountsForUser } from '../services/snaptradeService.js';
 
 // Nightly at 4:00 AM — prunes expired trusted IPs, stale OTPs, expired IP
@@ -49,6 +49,9 @@ export async function initAllJobs() {
 
     if (snaptradeJob) snaptradeJob.stop();
     snaptradeJob = cron.schedule(SNAPTRADE_SYNC_CRON, runSnapTradeSyncJob);
+
+    if (composerSyncJob) composerSyncJob.stop();
+    composerSyncJob = cron.schedule(COMPOSER_SYNC_CRON, runComposerSyncJob);
 }
 
 // Daily at 5:30 AM (SNAPTRADE_SYNC_CRON) — refreshes balances from SnapTrade
@@ -58,6 +61,32 @@ export async function initAllJobs() {
 const SNAPTRADE_SYNC_CRON = process.env.SNAPTRADE_SYNC_CRON || '30 5 * * *';
 
 let snaptradeJob = null;
+
+// Daily at 5:45 AM — pulls Composer portfolio balances for every user who has
+// stored Composer API credentials. Auto-snapshots after each successful sync.
+const COMPOSER_SYNC_CRON = process.env.COMPOSER_SYNC_CRON || '45 5 * * *';
+
+let composerSyncJob = null;
+
+export async function runComposerSyncJob() {
+    try {
+        const users = await query('SELECT user_id FROM composer_credentials');
+
+        for (const row of users.rows) {
+            try {
+                // takeSnapshot is called automatically inside syncComposerAccountsForUser.
+                const summary = await syncComposerAccountsForUser(row.user_id);
+                console.log(
+                    `[composer] Synced user ${row.user_id}: ${summary.accountsUpdated} account(s) updated`
+                );
+            } catch (error) {
+                console.error(`[composer] Sync failed for user ${row.user_id}:`, error.message);
+            }
+        }
+    } catch (error) {
+        console.error('[composer] Sync job failed:', error.message);
+    }
+}
 
 export async function runSnapTradeSyncJob() {
     if (!snaptradeConfigured()) {
@@ -71,8 +100,8 @@ export async function runSnapTradeSyncJob() {
 
         for (const row of users.rows) {
             try {
+                // takeSnapshot is called automatically inside syncAccountsForUser.
                 const summary = await syncAccountsForUser(row.user_id);
-                await takeSnapshot(row.user_id, 'auto: daily sync');
                 console.log(
                     `[snaptrade] Synced user ${row.user_id}: ${summary.updated} updated, `
                     + `${summary.created} created, ${summary.failures.length} failed`

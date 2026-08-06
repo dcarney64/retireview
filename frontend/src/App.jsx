@@ -8,8 +8,11 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import SecurityDashboard from './pages/admin/SecurityDashboard';
 import UserManagement from './pages/admin/UserManagement';
 import Accounts from './pages/Accounts';
+import Connections from './pages/Connections';
 import Dashboard from './pages/Dashboard';
 import Goal from './pages/Goal';
+import Import from './pages/Import';
+import Performance from './pages/Performance';
 import Login from './pages/Login';
 import Settings from './pages/Settings';
 import Signup from './pages/Signup';
@@ -43,6 +46,9 @@ export default function App() {
 
         <Route path="/" element={<AppShell><Page><Dashboard /></Page></AppShell>} />
         {/* ADD YOUR APP ROUTES BELOW THIS LINE */}
+        <Route path="/connections" element={<AppShell><Page><Connections /></Page></AppShell>} />
+        <Route path="/import"      element={<AppShell><Page><Import /></Page></AppShell>} />
+        <Route path="/performance" element={<AppShell><Page><Performance /></Page></AppShell>} />
         <Route path="/accounts" element={<AppShell><Page><Accounts /></Page></AppShell>} />
         <Route path="/goal" element={<AppShell><Page><Goal /></Page></AppShell>} />
 

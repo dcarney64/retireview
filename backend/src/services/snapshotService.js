@@ -7,7 +7,7 @@ export async function takeSnapshot(userId, note = null) {
     const client = await pool.connect();
     try {
         const accounts = await client.query(
-            `SELECT id, balance FROM accounts WHERE user_id = $1`,
+            `SELECT id, balance FROM accounts WHERE user_id = $1 AND include_in_tracking = true`,
             [userId]
         );
 

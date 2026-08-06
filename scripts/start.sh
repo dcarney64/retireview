@@ -1,100 +1,82 @@
 #!/bin/bash
-# RetireView — Start All Services (bare-metal dev; use `npm run docker:up` for Docker)
-
-set -e
-
-echo "🚀 Starting RetireView..."
-echo ""
-
-export NODE_ENV=production
+# RetireView — Start Services
+#
+# Usage:
+#   ./scripts/start.sh          Full Docker mode  (all 3 containers)
+#   ./scripts/start.sh --dev    Hybrid dev mode   (db+backend Docker, frontend Vite)
+#
+# Use ./scripts/rebuild.sh [backend|frontend|all] to pick up code changes.
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Bare-metal and Docker modes can't share ports — refuse to double-start
-if command -v docker >/dev/null 2>&1; then
-  RUNNING=$(cd "$ROOT" && docker compose ps -q --status running 2>/dev/null)
-  if [ -n "$RUNNING" ]; then
-    echo "✗ The Docker stack is already running (docker compose ps)."
-    echo "  Use it as-is, or stop it first:  npm run docker:down"
-    exit 1
-  fi
-fi
-
-# Read DB settings from .env (defaults if absent)
-DB_PORT=$(grep -E '^DB_PORT=' "$ROOT/.env" 2>/dev/null | cut -d= -f2)
-DB_PORT=${DB_PORT:-5437}
+DEV_MODE=false
+[ "${1:-}" = "--dev" ] && DEV_MODE=true
 
 # Enforce secret file permissions on every start
 chmod 600 "$ROOT/.env" 2>/dev/null || true
-chmod 600 "$ROOT/backend/.env" 2>/dev/null || true
-chmod 600 "$ROOT/frontend/.env" 2>/dev/null || true
 
-mkdir -p "$ROOT/logs"
+# ── Hybrid dev mode ──────────────────────────────────────────────────────────
+if "$DEV_MODE"; then
+  echo "🚀 Starting RetireView (hybrid dev mode)..."
+  echo "   Docker: db + backend"
+  echo "   Host:   Vite dev server (hot reload)"
+  echo ""
 
-# Check PostgreSQL is running
-if ! pg_isready -h localhost -p "$DB_PORT" -q; then
-  echo "✗ PostgreSQL not reachable on localhost:$DB_PORT"
-  echo "  Start it first, e.g.:  docker compose up -d db"
+  cd "$ROOT"
+  docker compose up -d db backend
+
+  echo "→ Waiting for backend..."
+  for i in {1..60}; do
+    if curl -s http://localhost:8006/health > /dev/null 2>&1; then
+      echo "✓ Backend ready on :8006"
+      break
+    fi
+    if [ "$i" -eq 60 ]; then
+      echo "✗ Backend did not become ready in 60 s"
+      echo "  Check logs:  docker compose logs backend"
+      exit 1
+    fi
+    sleep 1
+  done
+
+  echo ""
+  # Hand off to Vite in the foreground (Ctrl+C stops the dev server)
+  exec "$ROOT/scripts/dev-frontend.sh"
+fi
+
+# ── Full Docker mode (default) ────────────────────────────────────────────────
+echo "🚀 Starting RetireView (full Docker mode)..."
+
+cd "$ROOT"
+
+RUNNING=$(docker compose ps -q --status running 2>/dev/null)
+if [ -n "$RUNNING" ]; then
+  echo "⚠️  Containers are already running."
+  echo "   Use ./scripts/status.sh to inspect, or ./scripts/stop.sh to shut down first."
   exit 1
 fi
 
-echo "✓ PostgreSQL ready on port $DB_PORT"
+docker compose up -d
 
-# Start backend in background (non-watch mode to avoid EPIPE crash loops)
-echo "→ Starting backend on port 8006..."
-cd "$ROOT"
-nohup npm --prefix backend run start >> logs/.backend.log 2>&1 < /dev/null &
-BACKEND_PID=$!
-echo $BACKEND_PID > scripts/.backend.pid
-
-# Wait for backend to be ready
 echo "→ Waiting for backend..."
-backend_ready=0
-for i in {1..20}; do
+for i in {1..60}; do
   if curl -s http://localhost:8006/health > /dev/null 2>&1; then
-    echo "✓ Backend ready on port 8006"
-    backend_ready=1
+    echo "✓ Backend ready on :8006"
     break
   fi
-
-  if ! kill -0 $BACKEND_PID 2>/dev/null; then
-    echo "✗ Backend process exited before becoming ready"
-    echo "  Check logs/.backend.log for the failure reason"
+  if [ "$i" -eq 60 ]; then
+    echo "✗ Backend did not become ready in 60 s"
+    echo "  Check logs:  docker compose logs backend"
     exit 1
   fi
-
   sleep 1
 done
 
-if [ "$backend_ready" -ne 1 ]; then
-  echo "✗ Backend did not become ready in time"
-  exit 1
-fi
-
-# Start frontend with auto-restart on crash (OOM, etc.)
-echo "→ Starting frontend on port 5178 (auto-restart enabled)..."
-if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE '[:.]5178$'; then
-  echo "⚠️  Port 5178 already in use — skipping frontend start"
-else
-  chmod +x scripts/dev-frontend.sh
-  nohup bash scripts/dev-frontend.sh >> logs/.frontend.log 2>&1 < /dev/null &
-  sleep 3
-  FRONTEND_PID=$(lsof -ti:5178 2>/dev/null | head -1)
-  if [ -n "$FRONTEND_PID" ]; then
-    echo "✓ Frontend ready on port 5178 (Vite PID $FRONTEND_PID)"
-    echo "  Supervisor PID $(cat scripts/.frontend.pid 2>/dev/null || echo '?') in scripts/.frontend.pid"
-  else
-    echo "✗ Frontend did not bind to port 5178"
-    echo "  Check logs/.frontend.log for details"
-    tail -30 logs/.frontend.log 2>/dev/null || true
-  fi
-fi
-
 echo ""
-echo "✅ RetireView is running!"
-echo "   Frontend → http://localhost:5178"
-echo "   Backend  → http://localhost:8006"
-echo "   Database → localhost:$DB_PORT"
+echo "✅ RetireView is running (full Docker)"
+echo "   Frontend  →  http://localhost:5178"
+echo "   Backend   →  http://localhost:8006"
 echo ""
-echo "   Run scripts/stop.sh to shut everything down"
-echo "   Logs: logs/.backend.log, logs/.frontend.log"
+echo "   Shut down:              ./scripts/stop.sh"
+echo "   Pick up backend changes: ./scripts/rebuild.sh backend"
+echo "   Pick up all changes:     ./scripts/rebuild.sh all"

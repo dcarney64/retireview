@@ -1,16 +1,22 @@
 #!/bin/bash
-# RetireView — Restart All Services (restarts whichever mode is running)
+# RetireView — Restart Services
+#
+# Usage:
+#   ./scripts/restart.sh          Restart full Docker stack
+#   ./scripts/restart.sh --dev    Restart in hybrid dev mode (db+backend Docker, frontend Vite)
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if command -v docker >/dev/null 2>&1; then
-  RUNNING=$(cd "$ROOT" && docker compose ps -q --status running 2>/dev/null)
-  if [ -n "$RUNNING" ]; then
-    echo "🔄 Restarting RetireView (Docker)..."
-    cd "$ROOT" && exec docker compose restart
-  fi
-fi
+DEV_MODE=false
+[ "${1:-}" = "--dev" ] && DEV_MODE=true
 
-echo "🔄 Restarting RetireView (bare metal)..."
-"$(dirname "$0")/stop.sh"
+echo "🔄 Restarting RetireView..."
+
+"$ROOT/scripts/stop.sh"
 sleep 2
-"$(dirname "$0")/start.sh"
+
+if "$DEV_MODE"; then
+  exec "$ROOT/scripts/start.sh" --dev
+else
+  exec "$ROOT/scripts/start.sh"
+fi

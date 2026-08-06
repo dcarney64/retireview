@@ -21,10 +21,14 @@ import { globalLimiter } from './middleware/rateLimits.js';
 import accountsRoutes from './routes/accounts.js';
 import adminRoutes from './routes/admin.js';
 import authRoutes from './routes/auth.js';
+import connectionsRoutes from './routes/connections.js';
+import importRoutes from './routes/import.js';
 import goalsRoutes from './routes/goals.js';
+import performanceRoutes from './routes/performance.js';
 import settingsRoutes from './routes/settings.js';
 import snapshotsRoutes from './routes/snapshots.js';
 import snaptradeRoutes from './routes/snaptrade.js';
+import transfersRoutes from './routes/transfers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,9 +93,13 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/settings', settingsRoutes);
 // ADD YOUR APP ROUTES BELOW THIS LINE
 app.use('/api/accounts', accountsRoutes);
+app.use('/api/connections', connectionsRoutes);
+app.use('/api/import', importRoutes);
 app.use('/api/snapshots', snapshotsRoutes);
 app.use('/api/goals', goalsRoutes);
 app.use('/api/snaptrade', snaptradeRoutes);
+app.use('/api/transfers', transfersRoutes);
+app.use('/api/performance', performanceRoutes);
 
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

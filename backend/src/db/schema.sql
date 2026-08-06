@@ -217,3 +217,120 @@ CREATE TABLE IF NOT EXISTS goals (
   target_date           DATE,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================
+-- ACCOUNT TRANSFERS
+-- Cash flows in/out of accounts. Used for TWR calculation so
+-- that deposits and withdrawals don't inflate or deflate returns.
+-- Positive amount = deposit/transfer_in; negative = withdrawal/transfer_out.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS account_transfers (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  amount          NUMERIC(15,2) NOT NULL,
+  transfer_type   TEXT NOT NULL
+                  CHECK (transfer_type IN ('deposit', 'withdrawal', 'transfer_in', 'transfer_out')),
+  transferred_at  DATE NOT NULL,
+  notes           TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_transfers_user    ON account_transfers (user_id);
+CREATE INDEX IF NOT EXISTS idx_transfers_account ON account_transfers (account_id, transferred_at);
+
+-- source: 'manual' (user-entered) | 'snaptrade' (auto-created from transaction sync)
+-- snaptrade_tx_id: prevents duplicate transfers on re-sync
+ALTER TABLE account_transfers
+  ADD COLUMN IF NOT EXISTS source          TEXT NOT NULL DEFAULT 'manual',
+  ADD COLUMN IF NOT EXISTS snaptrade_tx_id TEXT;
+
+-- Partial unique index: allows NULLs for manual entries while deduplicating SnapTrade ones
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transfers_snaptrade_tx
+  ON account_transfers (snaptrade_tx_id) WHERE snaptrade_tx_id IS NOT NULL;
+
+-- ============================================================
+-- COMPOSER CREDENTIALS
+-- Stores encrypted Composer Direct API key per user (at most
+-- one row per user via the UNIQUE constraint on user_id).
+-- key_secret_enc is AES-256-GCM ciphertext via secretCrypto.js.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS composer_credentials (
+  id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        UUID        NOT NULL REFERENCES users(id)
+                             ON DELETE CASCADE UNIQUE,
+  key_id         TEXT        NOT NULL,
+  key_secret_enc TEXT        NOT NULL,
+  synced_at      TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_composer_creds_user ON composer_credentials (user_id);
+
+-- ============================================================
+-- CSV IMPORT — source tag on transactions
+-- Distinguishes snaptrade, csv_import, and manual rows.
+-- ============================================================
+ALTER TABLE account_transactions
+  ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'snaptrade';
+
+-- ============================================================
+-- CSV IMPORT LOG
+-- One row per file import; stores counts and warnings so the
+-- Import page can show "Last imported: Aug 5 2026 · 312 txns".
+-- Clearing this table does NOT delete the imported transactions.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS csv_import_log (
+  id                    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id               UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  filename              TEXT,
+  format                TEXT        NOT NULL DEFAULT 'fidelity',
+  transactions_imported INTEGER     NOT NULL DEFAULT 0,
+  snapshots_created     INTEGER     NOT NULL DEFAULT 0,
+  accounts_matched      INTEGER     NOT NULL DEFAULT 0,
+  accounts_unmatched    INTEGER     NOT NULL DEFAULT 0,
+  date_earliest         DATE,
+  date_latest           DATE,
+  warnings              JSONB       NOT NULL DEFAULT '[]',
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_csv_import_log_user ON csv_import_log (user_id, created_at DESC);
+
+-- ============================================================
+-- TRACKING FLAGS
+-- include_in_tracking: when false the account is still synced but excluded
+--   from net-worth totals, snapshots, and performance charts.
+-- fidelity_account_number: links a RetireView account to its Fidelity
+--   account number so the CSV importer can match by number on re-imports.
+-- ============================================================
+ALTER TABLE accounts
+  ADD COLUMN IF NOT EXISTS include_in_tracking    BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS fidelity_account_number TEXT;
+
+-- ============================================================
+-- ACCOUNT TRANSACTIONS
+-- Individual trade/income/transfer events pulled from SnapTrade.
+-- Keyed on (account_id, external_id) for idempotent re-syncs.
+-- CONTRIBUTION and WITHDRAWAL rows automatically generate a
+-- matching account_transfers row so TWR needs no manual input
+-- for SnapTrade-linked accounts.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS account_transactions (
+  id               UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          UUID    NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+  account_id       UUID    NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  external_id      TEXT    NOT NULL,       -- SnapTrade activity id
+  transaction_type TEXT    NOT NULL,       -- BUY, SELL, DIVIDEND, CONTRIBUTION, WITHDRAWAL, …
+  amount           NUMERIC(15,2),          -- cash value; null for some equity trades
+  price            NUMERIC(15,6),          -- per-unit price
+  units            NUMERIC(15,6),          -- shares/units traded
+  symbol           TEXT,                   -- ticker
+  currency         TEXT    NOT NULL DEFAULT 'USD',
+  transacted_at    DATE    NOT NULL,
+  description      TEXT,
+  created_at       TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (account_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_account
+  ON account_transactions (account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_date
+  ON account_transactions (account_id, transacted_at DESC);

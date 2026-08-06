@@ -3,9 +3,12 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 
 const mainItems = [
-  { label: 'Dashboard', path: '/' },
-  { label: 'Accounts', path: '/accounts' },
-  { label: 'Goal', path: '/goal' },
+  { label: 'Dashboard',   path: '/'             },
+  { label: 'Connections', path: '/connections'  },
+  { label: 'Import Data', path: '/import'       },
+  { label: 'Performance', path: '/performance'  },
+  { label: 'Accounts',    path: '/accounts'     },
+  { label: 'Goal',        path: '/goal'         },
 ];
 
 const secondaryItems = [

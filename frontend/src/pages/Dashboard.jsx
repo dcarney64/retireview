@@ -106,13 +106,17 @@ export default function Dashboard() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['snapshots'] }),
   });
 
-  const accounts = accountsQuery.data || [];
+  const accounts  = accountsQuery.data || [];
   const snapshots = snapshotsQuery.data || [];
-  const goal = goalQuery.data;
+  const goal      = goalQuery.data;
+
+  // Only sum accounts that are included in tracking
+  const trackedAccounts  = useMemo(() => accounts.filter((a) => a.include_in_tracking !== false), [accounts]);
+  const excludedCount    = accounts.length - trackedAccounts.length;
 
   const total = useMemo(
-    () => accounts.reduce((sum, a) => sum + Number(a.balance), 0),
-    [accounts]
+    () => trackedAccounts.reduce((sum, a) => sum + Number(a.balance), 0),
+    [trackedAccounts]
   );
 
   const history = useMemo(
@@ -124,7 +128,7 @@ export default function Dashboard() {
 
   const allocation = useMemo(() => {
     const sums = {};
-    for (const account of accounts) {
+    for (const account of trackedAccounts) {
       sums[account.type] = (sums[account.type] || 0) + Number(account.balance);
     }
     // Fixed type order so colors stay stable as accounts come and go
@@ -139,6 +143,12 @@ export default function Dashboard() {
         <div>
           <div className="text-sm text-slate-400">Net worth</div>
           <div className="text-4xl font-semibold text-slate-100">{formatCurrency(total)}</div>
+          {excludedCount > 0 ? (
+            <p className="mt-1 text-xs text-slate-500">
+              {excludedCount} account{excludedCount === 1 ? '' : 's'} excluded from total ·{' '}
+              <a href="/accounts" className="underline hover:text-slate-300">manage</a>
+            </p>
+          ) : null}
         </div>
         <div className="text-right">
           <Button onClick={() => snapshotMutation.mutate()} disabled={snapshotMutation.isPending}>
