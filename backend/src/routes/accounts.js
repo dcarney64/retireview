@@ -45,19 +45,30 @@ router.get('/', requireAuth, async (req, res) => {
 
 router.post('/', requireAuth, async (req, res) => {
     try {
-        const { name, type, balance, notes } = req.body || {};
+        const { name, type, balance, notes, externalId, source } = req.body || {};
 
         const invalid = validateAccountInput({ name, type, balance });
         if (invalid) {
             return res.status(400).json({ error: invalid });
         }
 
+        const VALID_SOURCES = ['manual', 'composer', 'snaptrade'];
+        const resolvedSource = VALID_SOURCES.includes(source) ? source : 'manual';
+
         const created = await query(
-            `INSERT INTO accounts (user_id, name, type, balance, notes)
-             VALUES ($1, $2, $3, $4, $5)
-             RETURNING id, name, type, balance, notes, include_in_tracking,
-                       fidelity_account_number, created_at, updated_at`,
-            [req.user.id, String(name).trim(), type, Number(balance) || 0, notes?.trim() || null]
+            `INSERT INTO accounts (user_id, name, type, balance, notes, source, external_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, name, type, balance, notes, source, external_id,
+                       include_in_tracking, fidelity_account_number, created_at, updated_at`,
+            [
+                req.user.id,
+                String(name).trim(),
+                type,
+                Number(balance) || 0,
+                notes?.trim() || null,
+                resolvedSource,
+                externalId?.trim() || null,
+            ]
         );
         return res.status(201).json(created.rows[0]);
     } catch (error) {

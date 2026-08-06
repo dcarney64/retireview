@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
 import { query } from '../db/client.js';
-import { encryptSecret } from '../lib/secretCrypto.js';
+import { decryptSecret, encryptSecret } from '../lib/secretCrypto.js';
 import { fetchComposerAccounts, syncComposerAccountsForUser } from '../services/composerService.js';
 
 const router = Router();
@@ -127,6 +127,33 @@ router.post('/composer/test', requireAuth, async (req, res) => {
     } catch (error) {
         // Return 200 with success:false so the UI can show the error message cleanly
         return res.json({ success: false, error: String(error.message).split('\n')[0] });
+    }
+});
+
+// ─── GET /api/connections/composer/accounts ──────────────────────────────────
+// Returns the live list of Composer portfolios so the Accounts page can let
+// the user pick which ones to add. Normalised to { id, name, value }.
+router.get('/composer/accounts', requireAuth, async (req, res) => {
+    try {
+        const credResult = await query(
+            'SELECT key_id, key_secret_enc FROM composer_credentials WHERE user_id = $1',
+            [req.user.id]
+        );
+
+        if (credResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Composer not connected' });
+        }
+
+        const { key_id, key_secret_enc } = credResult.rows[0];
+        const raw = await fetchComposerAccounts(key_id, decryptSecret(key_secret_enc));
+        const accounts = raw.map((a) => ({
+            id:    String(a.id ?? a.account_id ?? a.name ?? ''),
+            name:  a.name || a.title || a.label || 'Unnamed Portfolio',
+            value: Number(a.balance ?? a.portfolio_value ?? a.total_value ?? a.nav ?? 0),
+        }));
+        return res.json({ accounts });
+    } catch (error) {
+        return res.status(502).json({ error: String(error.message).split('\n')[0] });
     }
 });
 

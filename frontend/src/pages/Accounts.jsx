@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useMemo, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import apiClient from '../api/client';
 import ConfirmDialog from '../components/shared/ConfirmDialog';
@@ -31,6 +32,302 @@ function TrackingToggle({ checked, onChange, disabled }) {
         }`}
       />
     </button>
+  );
+}
+
+// ─── Add Account modal (type-selector flow) ───────────────────────────────────
+
+const ADD_TYPES = [
+  { id: 'brokerage', emoji: '🏦', title: 'Brokerage',  sub: 'via SnapTrade'  },
+  { id: 'composer',  emoji: '🎼', title: 'Composer',    sub: 'Direct API'     },
+  { id: 'tsp',       emoji: '🏛️', title: 'TSP',         sub: 'Manual entry'   },
+  { id: 'manual',    emoji: '💰', title: 'Manual',      sub: 'Any account'    },
+];
+
+function AddAccountModal({ onClose, onSaved }) {
+  const navigate      = useNavigate();
+  const queryClient   = useQueryClient();
+  const overlayRef    = useRef(null);
+  const [step, setStep]   = useState('type');
+  // composer sub-states
+  const [composerLoading, setComposerLoading] = useState(false);
+  const [composerConnected, setComposerConnected] = useState(false);
+  const [composerAccounts, setComposerAccounts]   = useState([]);
+  const [composerSelected, setComposerSelected]   = useState({});
+  const [composerError, setComposerError]         = useState('');
+  const [composerSaving, setComposerSaving]       = useState(false);
+  // manual sub-form
+  const [manualDefaultType, setManualDefaultType] = useState('retirement');
+  const [manualForm, setManualForm] = useState({ name: '', type: 'retirement', balance: '', notes: '' });
+  const [manualError, setManualError] = useState('');
+
+  const manualMutation = useMutation({
+    mutationFn: async () => apiClient.post('/accounts', {
+      name:    manualForm.name,
+      type:    manualForm.type,
+      balance: Number(manualForm.balance) || 0,
+      notes:   manualForm.notes,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      onSaved?.();
+      onClose();
+    },
+    onError: (err) => setManualError(err?.response?.data?.error || 'Failed to save account'),
+  });
+
+  // Close on backdrop click
+  const handleOverlay = (e) => { if (e.target === overlayRef.current) onClose(); };
+
+  // Initiate composer sub-flow
+  const handlePickComposer = async () => {
+    setStep('composer');
+    setComposerLoading(true);
+    setComposerError('');
+    try {
+      const statusRes = await apiClient.get('/connections/composer');
+      if (!statusRes.data.configured) {
+        setComposerConnected(false);
+        setComposerLoading(false);
+        return;
+      }
+      const acctRes = await apiClient.get('/connections/composer/accounts');
+      const accts   = acctRes.data.accounts || [];
+      setComposerAccounts(accts);
+      const defaults = {};
+      accts.forEach((a) => { defaults[a.id] = { checked: true, customName: a.name }; });
+      setComposerSelected(defaults);
+      setComposerConnected(true);
+    } catch (err) {
+      setComposerError(err?.response?.data?.error || 'Failed to load Composer accounts');
+    } finally {
+      setComposerLoading(false);
+    }
+  };
+
+  const handlePickType = (id) => {
+    if (id === 'brokerage') { setStep('brokerage'); return; }
+    if (id === 'composer')  { handlePickComposer(); return; }
+    const defaultType = id === 'tsp' ? 'retirement' : 'other';
+    setManualDefaultType(defaultType);
+    setManualForm((f) => ({ ...f, type: defaultType }));
+    setStep('manual');
+  };
+
+  const toggleComposer = (id) =>
+    setComposerSelected((prev) => ({ ...prev, [id]: { ...prev[id], checked: !prev[id]?.checked } }));
+  const setComposerName = (id, value) =>
+    setComposerSelected((prev) => ({ ...prev, [id]: { ...prev[id], customName: value } }));
+
+  const handleAddComposerAccounts = async () => {
+    setComposerSaving(true);
+    setComposerError('');
+    try {
+      const toAdd = composerAccounts.filter((a) => composerSelected[a.id]?.checked);
+      for (const acct of toAdd) {
+        const name = composerSelected[acct.id]?.customName || acct.name;
+        await apiClient.post('/accounts', {
+          name,
+          type:       'composer',
+          balance:    acct.value,
+          source:     'composer',
+          externalId: acct.id,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      onSaved?.();
+      onClose();
+    } catch (err) {
+      setComposerError(err?.response?.data?.error || 'Failed to add accounts');
+    } finally {
+      setComposerSaving(false);
+    }
+  };
+
+  const checkedCount = composerAccounts.filter((a) => composerSelected[a.id]?.checked).length;
+
+  const stepTitle = {
+    type:      'Add Account',
+    brokerage: 'Brokerage Account',
+    composer:  'Composer Account',
+    manual:    step === 'manual' ? (manualDefaultType === 'retirement' ? 'TSP Account' : 'Manual Account') : '',
+  }[step] || 'Add Account';
+
+  return (
+    <div
+      ref={overlayRef}
+      onClick={handleOverlay}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    >
+      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <div className="flex items-center gap-3">
+            {step !== 'type' && (
+              <button type="button" onClick={() => setStep('type')} className="text-xs text-slate-400 hover:text-slate-200">← Back</button>
+            )}
+            <h3 className="text-base font-semibold text-white">{stepTitle}</h3>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-100 text-xl leading-none">×</button>
+        </div>
+
+        {/* Body */}
+        <div className="px-6 py-5">
+
+          {/* Step: type selector */}
+          {step === 'type' && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-400">What type of account?</p>
+              <div className="grid grid-cols-2 gap-3">
+                {ADD_TYPES.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => handlePickType(t.id)}
+                    className="flex flex-col items-start rounded-lg border border-slate-700 bg-slate-800 p-4 text-left transition-colors hover:border-sky-600 hover:bg-slate-700"
+                  >
+                    <span className="mb-1 text-2xl">{t.emoji}</span>
+                    <span className="font-semibold text-slate-100">{t.title}</span>
+                    <span className="text-xs text-slate-400">{t.sub}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Step: brokerage (redirect) */}
+          {step === 'brokerage' && (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-300">
+                Fidelity, Schwab, Alpaca and others connect via SnapTrade. Manage connections in
+                Broker Settings.
+              </p>
+              <Button onClick={() => { onClose(); navigate('/broker-settings'); }}>
+                Go to Broker Settings →
+              </Button>
+            </div>
+          )}
+
+          {/* Step: composer */}
+          {step === 'composer' && (
+            <div className="space-y-4">
+              {composerLoading && <p className="text-sm text-slate-500">Checking Composer connection…</p>}
+              {composerError  && <p className="text-sm text-red-400">{composerError}</p>}
+
+              {!composerLoading && !composerConnected && !composerError && (
+                <div className="space-y-4">
+                  <p className="text-sm text-slate-300">Connect Composer in Broker Settings first.</p>
+                  <Button onClick={() => { onClose(); navigate('/broker-settings'); }}>
+                    Go to Broker Settings →
+                  </Button>
+                </div>
+              )}
+
+              {!composerLoading && composerConnected && (
+                <div className="space-y-4">
+                  <p className="text-sm font-medium text-slate-300">Select your Composer accounts to track:</p>
+                  <div className="divide-y divide-slate-700 rounded-lg border border-slate-700 max-h-72 overflow-y-auto">
+                    {composerAccounts.map((acct) => {
+                      const sel = composerSelected[acct.id] ?? { checked: false };
+                      return (
+                        <div key={acct.id} className="px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              id={`c-${acct.id}`}
+                              checked={!!sel.checked}
+                              onChange={() => toggleComposer(acct.id)}
+                              className="h-4 w-4 accent-sky-500"
+                            />
+                            <label htmlFor={`c-${acct.id}`} className="flex-1 text-sm text-slate-200">{acct.name}</label>
+                            <span className="text-sm text-slate-400">{formatCurrency(acct.value)}</span>
+                          </div>
+                          {sel.checked && (
+                            <div className="mt-2 ml-7">
+                              <Input
+                                value={sel.customName ?? acct.name}
+                                onChange={(e) => setComposerName(acct.id, e.target.value)}
+                                placeholder="Custom name"
+                                className="text-xs py-1.5"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <Button onClick={handleAddComposerAccounts} disabled={composerSaving || checkedCount === 0}>
+                    {composerSaving ? 'Adding…' : `Add ${checkedCount} Account${checkedCount !== 1 ? 's' : ''}`}
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step: manual entry (TSP or free-form) */}
+          {step === 'manual' && (
+            <form
+              className="space-y-3"
+              onSubmit={(e) => { e.preventDefault(); setManualError(''); manualMutation.mutate(); }}
+            >
+              <div className="space-y-1">
+                <label className="block text-sm text-slate-400" htmlFor="add-name">Account name</label>
+                <Input
+                  id="add-name"
+                  value={manualForm.name}
+                  onChange={(e) => setManualForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder={manualDefaultType === 'retirement' ? 'e.g. TSP Traditional' : 'e.g. Savings account'}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-sm text-slate-400" htmlFor="add-type">Type</label>
+                <select
+                  id="add-type"
+                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+                  value={manualForm.type}
+                  onChange={(e) => setManualForm((f) => ({ ...f, type: e.target.value }))}
+                >
+                  {ACCOUNT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="block text-sm text-slate-400" htmlFor="add-balance">Balance ($)</label>
+                <Input
+                  id="add-balance"
+                  type="number"
+                  step="0.01"
+                  value={manualForm.balance}
+                  onChange={(e) => setManualForm((f) => ({ ...f, balance: e.target.value }))}
+                  placeholder="0.00"
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-sm text-slate-400" htmlFor="add-notes">Notes (optional)</label>
+                <Input
+                  id="add-notes"
+                  value={manualForm.notes}
+                  onChange={(e) => setManualForm((f) => ({ ...f, notes: e.target.value }))}
+                  placeholder="Optional"
+                />
+              </div>
+              {manualError ? <p className="text-sm text-red-400">{manualError}</p> : null}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" className="bg-slate-700 hover:bg-slate-600" onClick={onClose}>Cancel</Button>
+                <Button type="submit" disabled={manualMutation.isPending}>
+                  {manualMutation.isPending ? 'Saving…' : 'Add Account'}
+                </Button>
+              </div>
+            </form>
+          )}
+
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -338,6 +635,7 @@ function AccountModal({ account, onClose, onSaved }) {
 export default function Accounts() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
+  const [addOpen, setAddOpen]           = useState(false);
   const [modalAccount, setModalAccount] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -394,7 +692,7 @@ export default function Accounts() {
           <Button className="bg-slate-700 hover:bg-slate-600" onClick={() => setTransferOpen(true)} disabled={accounts.length === 0}>
             Log Transfer
           </Button>
-          <Button onClick={() => setModalAccount({})}>Add Account</Button>
+          <Button onClick={() => setAddOpen(true)}>Add Account</Button>
         </div>
       </div>
 
@@ -475,6 +773,13 @@ export default function Accounts() {
           );
         })
       )}
+
+      {addOpen ? (
+        <AddAccountModal
+          onClose={() => setAddOpen(false)}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ['accounts'] })}
+        />
+      ) : null}
 
       {modalAccount !== null ? (
         <AccountModal

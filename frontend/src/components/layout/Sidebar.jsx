@@ -3,22 +3,17 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 
 const mainItems = [
-  { label: 'Dashboard',   path: '/'             },
-  { label: 'Connections', path: '/connections'  },
-  { label: 'Import Data', path: '/import'       },
-  { label: 'Performance', path: '/performance'  },
-  { label: 'Accounts',    path: '/accounts'     },
-  { label: 'Goal',        path: '/goal'         },
-];
-
-const secondaryItems = [
-  { label: 'Settings', path: '/settings' },
+  { label: 'Dashboard',   path: '/'            },
+  { label: 'Performance', path: '/performance' },
+  { label: 'Accounts',    path: '/accounts'    },
+  { label: 'Import Data', path: '/import'      },
+  { label: 'Goal',        path: '/goal'        },
 ];
 
 const adminItems = [
-  { label: 'Admin Dashboard', path: '/admin' },
-  { label: 'User Management', path: '/admin/users' },
-  { label: 'Security', path: '/admin/security' },
+  { label: 'Admin Dashboard', path: '/admin'         },
+  { label: 'User Management', path: '/admin/users'   },
+  { label: 'Security',        path: '/admin/security'},
 ];
 
 function isActivePath(pathname, itemPath) {
@@ -30,7 +25,7 @@ function isActivePath(pathname, itemPath) {
 
 export default function Sidebar() {
   const location = useLocation();
-  const user = useAuthStore((state) => state.user);
+  const user     = useAuthStore((state) => state.user);
 
   const renderLink = (item) => {
     const active = isActivePath(location.pathname, item.path);
@@ -49,24 +44,9 @@ export default function Sidebar() {
 
   return (
     <aside className="w-72 shrink-0 border-r border-slate-800 bg-slate-900 p-4">
-      <div className="mb-6 rounded-lg border border-slate-800 bg-slate-950 p-4">
-        <div className="text-sm text-slate-400">Signed in as</div>
-        <div className="font-semibold text-slate-100">{user?.fullName || user?.email || 'User'}</div>
-        <div className="mt-1 inline-block rounded-full bg-slate-800 px-2 py-1 text-xs uppercase text-slate-300">
-          {user?.role || 'user'}
-        </div>
-      </div>
-
       <nav className="space-y-1">
         {mainItems.map(renderLink)}
       </nav>
-
-      <div className="mt-6 border-t border-slate-800 pt-4">
-        <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">More</div>
-        <nav className="space-y-1">
-          {secondaryItems.map(renderLink)}
-        </nav>
-      </div>
 
       {user?.role === 'admin' ? (
         <div className="mt-6 border-t border-slate-800 pt-4">

@@ -8,6 +8,7 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import SecurityDashboard from './pages/admin/SecurityDashboard';
 import UserManagement from './pages/admin/UserManagement';
 import Accounts from './pages/Accounts';
+import BrokerSettings from './pages/BrokerSettings';
 import Connections from './pages/Connections';
 import Dashboard from './pages/Dashboard';
 import Goal from './pages/Goal';
@@ -46,6 +47,8 @@ export default function App() {
 
         <Route path="/" element={<AppShell><Page><Dashboard /></Page></AppShell>} />
         {/* ADD YOUR APP ROUTES BELOW THIS LINE */}
+        <Route path="/broker-settings" element={<AppShell><Page><BrokerSettings /></Page></AppShell>} />
+        {/* Legacy redirect — keeps old /connections bookmarks working */}
         <Route path="/connections" element={<AppShell><Page><Connections /></Page></AppShell>} />
         <Route path="/import"      element={<AppShell><Page><Import /></Page></AppShell>} />
         <Route path="/performance" element={<AppShell><Page><Performance /></Page></AppShell>} />
