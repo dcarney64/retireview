@@ -581,3 +581,149 @@ ALTER TABLE properties
   ADD COLUMN IF NOT EXISTS commission_rate NUMERIC(5,2) DEFAULT 6.00;
 ALTER TABLE properties
   ADD COLUMN IF NOT EXISTS sale_costs      NUMERIC(15,2) DEFAULT 0;
+
+-- ============================================================
+-- MULTI-PROFILE HOUSEHOLD SUPPORT  (v0.5.0)
+-- One login manages multiple profiles (self / spouse / partner
+-- / dependent). Each profile has its own accounts, properties,
+-- scenarios, etc. "Combined" view aggregates across all.
+-- ============================================================
+
+-- 1. PROFILES TABLE
+CREATE TABLE IF NOT EXISTS profiles (
+  id             SERIAL PRIMARY KEY,
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  relationship   TEXT DEFAULT 'self'
+                 CHECK (relationship IN ('self','spouse','partner','dependent','other')),
+  birth_year     INTEGER,
+  is_primary     BOOLEAN DEFAULT false,
+  color          TEXT DEFAULT '#6366f1',
+  avatar_initial TEXT,        -- auto-set from name on insert/update if null
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_profiles_user ON profiles(user_id);
+
+-- 2. SEED a primary profile for every existing user (idempotent)
+INSERT INTO profiles (user_id, name, relationship, is_primary, color, avatar_initial)
+SELECT
+  u.id,
+  COALESCE(NULLIF(SPLIT_PART(u.full_name, ' ', 1), ''), SPLIT_PART(u.email, '@', 1)),
+  'self',
+  true,
+  '#6366f1',
+  UPPER(LEFT(COALESCE(NULLIF(SPLIT_PART(u.full_name, ' ', 1), ''), SPLIT_PART(u.email, '@', 1)), 1))
+FROM users u
+WHERE u.id NOT IN (
+  SELECT DISTINCT user_id FROM profiles WHERE is_primary = true
+);
+
+-- 3. ADD profile_id to every data table (nullable first, NOT NULL after migration)
+
+ALTER TABLE accounts
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE other_assets
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE retirement_scenarios
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE snapshots
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE goals
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE income_events
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE portfolio_history
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+ALTER TABLE account_transfers
+  ADD COLUMN IF NOT EXISTS profile_id INTEGER REFERENCES profiles(id) ON DELETE CASCADE;
+
+-- 4. MIGRATE existing rows to each user's primary profile
+UPDATE accounts a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE properties a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE other_assets a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE retirement_scenarios a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE snapshots a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE goals a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE income_events a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE portfolio_history a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+UPDATE account_transfers a
+  SET profile_id = p.id
+  FROM profiles p
+  WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
+
+-- 5. ENFORCE NOT NULL on critical tables (safe after migration above)
+ALTER TABLE accounts          ALTER COLUMN profile_id SET NOT NULL;
+ALTER TABLE properties        ALTER COLUMN profile_id SET NOT NULL;
+ALTER TABLE other_assets      ALTER COLUMN profile_id SET NOT NULL;
+ALTER TABLE retirement_scenarios ALTER COLUMN profile_id SET NOT NULL;
+ALTER TABLE snapshots         ALTER COLUMN profile_id SET NOT NULL;
+ALTER TABLE income_events     ALTER COLUMN profile_id SET NOT NULL;
+-- goals / portfolio_history / account_transfers remain nullable for safety
+
+-- 6. FIX SNAPSHOTS unique constraint: was (user_id, snapped_at),
+--    now must be (profile_id, snapped_at) to allow two profiles to
+--    each have a snapshot on the same day.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'snapshots_user_id_snapped_at_key'
+      AND conrelid = 'snapshots'::regclass
+  ) THEN
+    ALTER TABLE snapshots DROP CONSTRAINT snapshots_user_id_snapped_at_key;
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_profile_date
+  ON snapshots(profile_id, snapped_at);
+
+-- 7. ADD INDEXES
+CREATE INDEX IF NOT EXISTS idx_accounts_profile       ON accounts(profile_id);
+CREATE INDEX IF NOT EXISTS idx_properties_profile     ON properties(profile_id);
+CREATE INDEX IF NOT EXISTS idx_other_assets_profile   ON other_assets(profile_id);
+CREATE INDEX IF NOT EXISTS idx_scenarios_profile      ON retirement_scenarios(profile_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_profile      ON snapshots(profile_id);
+CREATE INDEX IF NOT EXISTS idx_income_profile         ON income_events(profile_id);

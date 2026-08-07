@@ -8,6 +8,7 @@ import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { formatCurrency } from '../lib/accountTypes';
+import { useActiveProfile } from '../store/useActiveProfile';
 
 const ASSET_TYPES = [
   { value: 'business', label: 'Business', emoji: '🏢' },
@@ -294,11 +295,12 @@ function groupByType(assets) {
 
 export default function OtherAssets() {
   const queryClient = useQueryClient();
+  const pid = useActiveProfile();
   const [modal, setModal] = useState(null); // null | {mode:'add'} | {mode:'edit',asset}
   const [archiveTarget, setArchiveTarget] = useState(null);
 
   const summaryQuery = useQuery({
-    queryKey: ['other-assets-summary'],
+    queryKey: ['other-assets-summary', pid],
     queryFn: async () => (await apiClient.get('/other-assets/summary')).data,
   });
 

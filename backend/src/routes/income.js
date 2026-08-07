@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile, writeProfileId } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -8,10 +9,10 @@ const router = Router();
 const EVENT_TYPES = ['dividend', 'interest', 'rental', 'capital_gain', 'other'];
 const TAX_TREATMENTS = ['taxable', 'tax_deferred', 'tax_free'];
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
-        const conditions = ['ie.user_id = $1'];
-        const params = [req.user.id];
+        const conditions = ['ie.user_id = $1', '($2::int IS NULL OR ie.profile_id = $2)'];
+        const params = [req.user.id, req.profileId];
 
         if (req.query.year) {
             params.push(Number(req.query.year));
@@ -44,7 +45,7 @@ router.get('/', requireAuth, async (req, res) => {
     }
 });
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const { account_id, event_type, amount, symbol, description, event_date, tax_treatment } = req.body || {};
 
@@ -71,12 +72,13 @@ router.post('/', requireAuth, async (req, res) => {
 
         const created = await query(
             `INSERT INTO income_events
-                 (user_id, account_id, event_type, amount, symbol, description, event_date, tax_treatment)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 (user_id, profile_id, account_id, event_type, amount, symbol, description, event_date, tax_treatment)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              RETURNING id, account_id, event_type, amount, symbol, description,
                        event_date::text AS event_date, tax_treatment, source, created_at`,
             [
                 req.user.id,
+                writeProfileId(req),
                 account_id || null,
                 event_type,
                 Number(amount),
@@ -92,7 +94,7 @@ router.post('/', requireAuth, async (req, res) => {
     }
 });
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const deleted = await query(
             `DELETE FROM income_events WHERE id = $1 AND user_id = $2 RETURNING id`,
@@ -133,7 +135,7 @@ function summarize(rows) {
     };
 }
 
-router.get('/summary', requireAuth, async (req, res) => {
+router.get('/summary', requireAuth, requireProfile, async (req, res) => {
     try {
         const now = new Date();
         const thisYear = now.getFullYear();
@@ -143,8 +145,9 @@ router.get('/summary', requireAuth, async (req, res) => {
                 `SELECT ie.event_type, ie.amount, ie.event_date::text AS event_date, ie.tax_treatment
                  FROM income_events ie
                  WHERE ie.user_id = $1
-                   AND EXTRACT(YEAR FROM ie.event_date) >= $2`,
-                [req.user.id, thisYear - 1]
+                   AND ($2::int IS NULL OR ie.profile_id = $2)
+                   AND EXTRACT(YEAR FROM ie.event_date) >= $3`,
+                [req.user.id, req.profileId, thisYear - 1]
             ),
             query(
                 `SELECT COALESCE(COALESCE(a.display_name, a.name), '(no account)') AS account_name,
@@ -154,10 +157,11 @@ router.get('/summary', requireAuth, async (req, res) => {
                  FROM income_events ie
                  LEFT JOIN accounts a ON a.id = ie.account_id
                  WHERE ie.user_id = $1
-                   AND EXTRACT(YEAR FROM ie.event_date) = $2
+                   AND ($2::int IS NULL OR ie.profile_id = $2)
+                   AND EXTRACT(YEAR FROM ie.event_date) = $3
                  GROUP BY 1, 2, 3
                  ORDER BY ytd_total DESC`,
-                [req.user.id, thisYear]
+                [req.user.id, req.profileId, thisYear]
             ),
         ]);
 

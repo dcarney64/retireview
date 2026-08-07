@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile, writeProfileId } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -26,7 +27,7 @@ function validateAccountInput({ name, type, balance }, { partial = false } = {})
     return null;
 }
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT id, name, display_name, type, balance, notes, source, institution,
@@ -34,8 +35,9 @@ router.get('/', requireAuth, async (req, res) => {
                     archived_at, created_at, updated_at
              FROM accounts
              WHERE user_id = $1
+               AND ($2::int IS NULL OR profile_id = $2)
              ORDER BY type, name`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
         return res.json(result.rows);
     } catch (error) {
@@ -43,7 +45,7 @@ router.get('/', requireAuth, async (req, res) => {
     }
 });
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const { name, type, balance, notes, externalId, source } = req.body || {};
 
@@ -56,12 +58,13 @@ router.post('/', requireAuth, async (req, res) => {
         const resolvedSource = VALID_SOURCES.includes(source) ? source : 'manual';
 
         const created = await query(
-            `INSERT INTO accounts (user_id, name, type, balance, notes, source, external_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            `INSERT INTO accounts (user_id, profile_id, name, type, balance, notes, source, external_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING id, name, display_name, type, balance, notes, source, external_id,
                        include_in_tracking, fidelity_account_number, created_at, updated_at`,
             [
                 req.user.id,
+                writeProfileId(req),
                 String(name).trim(),
                 type,
                 Number(balance) || 0,
@@ -76,7 +79,7 @@ router.post('/', requireAuth, async (req, res) => {
     }
 });
 
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const { name, type, balance, notes, include_in_tracking, display_name, archived } = req.body || {};
 
@@ -148,7 +151,7 @@ router.put('/:id', requireAuth, async (req, res) => {
     }
 });
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const deleted = await query(
             `DELETE FROM accounts WHERE id = $1 AND user_id = $2 RETURNING id`,

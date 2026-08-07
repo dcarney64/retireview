@@ -11,7 +11,7 @@ import Accounts from './pages/Accounts';
 import BrokerSettings from './pages/BrokerSettings';
 import Connections from './pages/Connections';
 import Dashboard from './pages/Dashboard';
-import Household from './pages/Household';
+// Household page replaced by Settings → Household Members (v0.5.0)
 import Import from './pages/Import';
 import Income from './pages/Income';
 import NetWorth from './pages/NetWorth';
@@ -61,7 +61,8 @@ export default function App() {
         <Route path="/performance" element={<AppShell><Page><Performance /></Page></AppShell>} />
         <Route path="/net-worth" element={<AppShell><Page><NetWorth /></Page></AppShell>} />
         <Route path="/real-estate" element={<AppShell><Page><RealEstate /></Page></AppShell>} />
-        <Route path="/household" element={<AppShell><Page><Household /></Page></AppShell>} />
+        {/* /household redirects to Settings → Household Members section (v0.5.0) */}
+        <Route path="/household" element={<Navigate to="/settings" replace />} />
         <Route path="/other-assets" element={<AppShell><Page><OtherAssets /></Page></AppShell>} />
         <Route path="/accounts" element={<AppShell><Page><Accounts /></Page></AppShell>} />
         <Route path="/retirement" element={<AppShell><Page><Retirement /></Page></AppShell>} />

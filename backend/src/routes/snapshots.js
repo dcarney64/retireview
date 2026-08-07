@@ -1,12 +1,13 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile, writeProfileId } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 import { takeSnapshot } from '../services/snapshotService.js';
 
 const router = Router();
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT s.id, s.total, s.note, s.snapped_at, s.created_at,
@@ -26,9 +27,10 @@ router.get('/', requireAuth, async (req, res) => {
              LEFT JOIN account_snapshots asn ON asn.snapshot_id = s.id
              LEFT JOIN accounts a ON a.id = asn.account_id
              WHERE s.user_id = $1
+               AND ($2::int IS NULL OR s.profile_id = $2)
              GROUP BY s.id
              ORDER BY s.snapped_at DESC`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
         return res.json(result.rows);
     } catch (error) {
@@ -37,11 +39,13 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // Captures current account balances as a point-in-time record.
-// One snapshot per day: snapping again today replaces today's snapshot.
-router.post('/', requireAuth, async (req, res) => {
+// One snapshot per day per profile: snapping again today replaces today's snapshot.
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const { note } = req.body || {};
-        const result = await takeSnapshot(req.user.id, note);
+        // Use the effective profile (primary if combined mode)
+        const profileId = writeProfileId(req);
+        const result = await takeSnapshot(req.user.id, profileId, note);
 
         if (result.skipped) {
             return res.status(400).json({ error: 'Add at least one account before taking a snapshot' });
@@ -53,7 +57,7 @@ router.post('/', requireAuth, async (req, res) => {
     }
 });
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const deleted = await query(
             `DELETE FROM snapshots WHERE id = $1 AND user_id = $2 RETURNING id`,

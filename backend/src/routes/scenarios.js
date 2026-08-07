@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile, writeProfileId } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -30,12 +31,13 @@ const NUMERIC_FIELDS = [
     'spouse_ss_monthly', 'spouse_ss_age', 'spouse_pension_monthly', 'spouse_retirement_age',
 ];
 
-async function liquidPortfolioTotal(userId) {
+async function liquidPortfolioTotal(userId, profileId = null) {
     const result = await query(
         `SELECT COALESCE(SUM(balance), 0) AS total
          FROM accounts
-         WHERE user_id = $1 AND include_in_tracking = true AND archived_at IS NULL`,
-        [userId]
+         WHERE user_id = $1 AND include_in_tracking = true AND archived_at IS NULL
+           AND ($2::int IS NULL OR profile_id = $2)`,
+        [userId, profileId]
     );
     return Number(result.rows[0].total);
 }
@@ -324,7 +326,7 @@ function deterministicPortfolioAtRetirement(params) {
     return portfolio;
 }
 
-router.get('/:id/monte-carlo', requireAuth, async (req, res) => {
+router.get('/:id/monte-carlo', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT ${SCENARIO_COLUMNS} FROM retirement_scenarios WHERE id = $1 AND user_id = $2`,
@@ -336,7 +338,7 @@ router.get('/:id/monte-carlo', requireAuth, async (req, res) => {
 
         const scenario = { ...result.rows[0] };
         if (scenario.starting_portfolio === null) {
-            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id);
+            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id, req.profileId);
         }
         const params = normalizeScenario(scenario);
         const numYears = params.lifeExpectancy - params.currentAge + 1;
@@ -387,7 +389,7 @@ router.get('/:id/monte-carlo', requireAuth, async (req, res) => {
     }
 });
 
-router.get('/:id/safe-withdrawal-rate', requireAuth, async (req, res) => {
+router.get('/:id/safe-withdrawal-rate', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT ${SCENARIO_COLUMNS} FROM retirement_scenarios WHERE id = $1 AND user_id = $2`,
@@ -399,7 +401,7 @@ router.get('/:id/safe-withdrawal-rate', requireAuth, async (req, res) => {
 
         const scenario = { ...result.rows[0] };
         if (scenario.starting_portfolio === null) {
-            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id);
+            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id, req.profileId);
         }
         const params = normalizeScenario(scenario);
         const numYears = params.lifeExpectancy - params.currentAge + 1;
@@ -458,19 +460,28 @@ router.get('/:id/safe-withdrawal-rate', requireAuth, async (req, res) => {
     }
 });
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         let result = await query(
             `SELECT ${SCENARIO_COLUMNS}
              FROM retirement_scenarios
              WHERE user_id = $1
+               AND ($2::int IS NULL OR profile_id = $2)
              ORDER BY created_at`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
 
-        // Lazily seed a default scenario for users created after migration
-        if (!result.rowCount) {
-            const portfolio = await liquidPortfolioTotal(req.user.id);
+        // Lazily seed a default scenario for profiles that have none yet
+        if (!result.rowCount && req.profileId) {
+            const portfolio = await liquidPortfolioTotal(req.user.id, req.profileId);
+            result = await query(
+                `INSERT INTO retirement_scenarios (user_id, profile_id, name, is_active, starting_portfolio)
+                 VALUES ($1, $2, 'Moderate', true, $3)
+                 RETURNING ${SCENARIO_COLUMNS}`,
+                [req.user.id, req.profileId, portfolio]
+            );
+        } else if (!result.rowCount) {
+            const portfolio = await liquidPortfolioTotal(req.user.id, null);
             result = await query(
                 `INSERT INTO retirement_scenarios (user_id, name, is_active, starting_portfolio)
                  VALUES ($1, 'Moderate', true, $2)
@@ -513,22 +524,23 @@ function buildScenarioValues(body) {
     return values;
 }
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const body = req.body || {};
         if (!body.name || !String(body.name).trim()) {
             return res.status(400).json({ error: 'name is required' });
         }
         const values = buildScenarioValues(body);
+        const effectiveProfileId = writeProfileId(req);
         if (values.starting_portfolio === undefined) {
-            values.starting_portfolio = await liquidPortfolioTotal(req.user.id);
+            values.starting_portfolio = await liquidPortfolioTotal(req.user.id, effectiveProfileId);
         }
 
         const cols = Object.keys(values);
-        const params = [req.user.id, ...cols.map((c) => values[c])];
+        const params = [req.user.id, effectiveProfileId, ...cols.map((c) => values[c])];
         const created = await query(
-            `INSERT INTO retirement_scenarios (user_id, ${cols.join(', ')})
-             VALUES ($1, ${cols.map((_, i) => `$${i + 2}`).join(', ')})
+            `INSERT INTO retirement_scenarios (user_id, profile_id, ${cols.join(', ')})
+             VALUES ($1, $2, ${cols.map((_, i) => `$${i + 3}`).join(', ')})
              RETURNING ${SCENARIO_COLUMNS}`,
             params
         );
@@ -538,7 +550,7 @@ router.post('/', requireAuth, async (req, res) => {
     }
 });
 
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const values = buildScenarioValues(req.body || {});
         if (values.name === '') {
@@ -568,7 +580,7 @@ router.put('/:id', requireAuth, async (req, res) => {
     }
 });
 
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const deleted = await query(
             `DELETE FROM retirement_scenarios WHERE id = $1 AND user_id = $2
@@ -595,7 +607,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     }
 });
 
-router.post('/:id/activate', requireAuth, async (req, res) => {
+router.post('/:id/activate', requireAuth, requireProfile, async (req, res) => {
     try {
         const activated = await query(
             `UPDATE retirement_scenarios SET is_active = (id = $1), updated_at = NOW()
@@ -613,7 +625,7 @@ router.post('/:id/activate', requireAuth, async (req, res) => {
     }
 });
 
-router.get('/:id/projection', requireAuth, async (req, res) => {
+router.get('/:id/projection', requireAuth, requireProfile, async (req, res) => {
     try {
         const [scenarioResult, otherAssetsResult] = await Promise.all([
             query(
@@ -627,8 +639,9 @@ router.get('/:id/projection', requireAuth, async (req, res) => {
                         generates_income, monthly_income, income_description,
                         expected_sale_age, expected_sale_value
                  FROM other_assets
-                 WHERE user_id = $1 AND archived_at IS NULL`,
-                [req.user.id]
+                 WHERE user_id = $1 AND archived_at IS NULL
+                   AND ($2::int IS NULL OR profile_id = $2)`,
+                [req.user.id, req.profileId]
             ),
         ]);
 
@@ -639,7 +652,7 @@ router.get('/:id/projection', requireAuth, async (req, res) => {
         const scenario = { ...scenarioResult.rows[0] };
         // Fall back to live account totals when the scenario has no explicit portfolio
         if (scenario.starting_portfolio === null) {
-            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id);
+            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id, req.profileId);
         }
 
         const otherAssets = otherAssetsResult.rows;

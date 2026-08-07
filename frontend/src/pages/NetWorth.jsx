@@ -19,6 +19,7 @@ import Skeleton from '../components/shared/Skeleton';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { formatCurrency } from '../lib/accountTypes';
+import { useActiveProfile } from '../store/useActiveProfile';
 
 const CARD_SURFACE = '#0f172a';
 // Validated on slate-900: CVD ΔE ≥ 8.4, contrast ≥ 3:1 for all pairs
@@ -73,8 +74,9 @@ function SubRow({ label, value }) {
 }
 
 export default function NetWorth() {
+  const pid = useActiveProfile();
   const netWorthQuery = useQuery({
-    queryKey: ['net-worth'],
+    queryKey: ['net-worth', pid],
     queryFn: async () => (await apiClient.get('/net-worth')).data,
   });
 

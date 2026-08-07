@@ -13,6 +13,7 @@ import {
 import apiClient from '../api/client';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { useActiveProfile } from '../store/useActiveProfile';
 import { Input } from '../components/ui/input';
 import Skeleton from '../components/shared/Skeleton';
 import { formatCurrency } from '../lib/accountTypes';
@@ -147,17 +148,18 @@ function AddIncomeForm({ accounts, onSaved }) {
 
 export default function Income() {
   const queryClient = useQueryClient();
+  const pid = useActiveProfile();
 
   const summaryQuery = useQuery({
-    queryKey: ['income-summary'],
+    queryKey: ['income-summary', pid],
     queryFn: async () => (await apiClient.get('/income/summary')).data,
   });
   const eventsQuery = useQuery({
-    queryKey: ['income-events'],
+    queryKey: ['income-events', pid],
     queryFn: async () => (await apiClient.get('/income')).data,
   });
   const accountsQuery = useQuery({
-    queryKey: ['accounts'],
+    queryKey: ['accounts', pid],
     queryFn: async () => (await apiClient.get('/accounts')).data,
   });
 

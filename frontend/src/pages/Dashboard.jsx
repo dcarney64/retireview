@@ -19,6 +19,8 @@ import Skeleton from '../components/shared/Skeleton';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { ACCOUNT_TYPES, formatCurrency, typeColor, typeLabel } from '../lib/accountTypes';
+import { useActiveProfile } from '../store/useActiveProfile';
+import { useProfileStore } from '../store/profileStore';
 
 const CARD_SURFACE = '#0f172a'; // slate-900 — segment gaps ring in the surface color
 const SERIES_BLUE = '#3987e5';
@@ -92,8 +94,16 @@ function getStoredView() {
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
+  const pid         = useActiveProfile(); // cache key isolator
+  const profiles    = useProfileStore((state) => state.profiles);
+  const activeProfileId = useProfileStore((state) => state.activeProfileId);
   const [snapshotError, setSnapshotError] = useState('');
   const [dashView, setDashView] = useState(getStoredView);
+
+  // Greeting: show profile name for single-profile, "Household" for combined
+  const activeProfile = activeProfileId !== null
+    ? profiles.find((p) => p.id === activeProfileId)
+    : null;
 
   const switchView = (v) => {
     setDashView(v);
@@ -101,11 +111,11 @@ export default function Dashboard() {
   };
 
   const accountsQuery = useQuery({
-    queryKey: ['accounts'],
+    queryKey: ['accounts', pid],
     queryFn: async () => (await apiClient.get('/accounts')).data,
   });
   const snapshotsQuery = useQuery({
-    queryKey: ['snapshots'],
+    queryKey: ['snapshots', pid],
     queryFn: async () => (await apiClient.get('/snapshots')).data,
   });
   const goalQuery = useQuery({
@@ -113,7 +123,7 @@ export default function Dashboard() {
     queryFn: async () => (await apiClient.get('/goals')).data,
   });
   const netWorthQuery = useQuery({
-    queryKey: ['net-worth', dashView],
+    queryKey: ['net-worth', dashView, pid],
     queryFn: async () => (await apiClient.get(`/net-worth${dashView === 'combined' ? '?view=combined' : ''}`)).data,
   });
   const householdQuery = useQuery({
@@ -121,12 +131,12 @@ export default function Dashboard() {
     queryFn: async () => (await apiClient.get('/household')).data,
   });
   const scenariosQuery = useQuery({
-    queryKey: ['scenarios'],
+    queryKey: ['scenarios', pid],
     queryFn: async () => (await apiClient.get('/scenarios')).data,
   });
   const activeScenario = (scenariosQuery.data || []).find((s) => s.is_active) || null;
   const projectionQuery = useQuery({
-    queryKey: ['projection', activeScenario?.id, activeScenario?.updated_at],
+    queryKey: ['projection', activeScenario?.id, activeScenario?.updated_at, pid],
     queryFn: async () => (await apiClient.get(`/scenarios/${activeScenario.id}/projection`)).data,
     enabled: !!activeScenario,
   });

@@ -18,6 +18,7 @@ import apiClient from '../api/client';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { ACCOUNT_TYPES, formatCurrency, typeColor, typeLabel } from '../lib/accountTypes';
+import { useActiveProfile } from '../store/useActiveProfile';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -323,6 +324,7 @@ function MonthlyHeatmap({ data, isLoading }) {
 
 export default function Performance() {
   const queryClient = useQueryClient();
+  const pid = useActiveProfile();
 
   // View mode: 'all' | 'type' | 'account'
   const [viewMode,         setViewMode]         = useState('all');
@@ -340,7 +342,7 @@ export default function Performance() {
 
   // ── Data fetching ───────────────────────────────────────────────────────────
   const perfQuery = useQuery({
-    queryKey: ['performance'],
+    queryKey: ['performance', pid],
     queryFn:  async () => (await apiClient.get('/performance')).data,
     staleTime: 5 * 60_000,
   });

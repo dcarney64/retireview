@@ -1,18 +1,21 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
 
 // Aggregated net worth: liquid accounts + real estate (your equity share) +
-// other assets + household members (optional combined view) − mortgages.
+// other assets + household members (legacy combined view) − mortgages.
 //
-// ?view=combined   includes household member assets/liabilities
-// ?view=self       default — user only
-router.get('/', requireAuth, async (req, res) => {
+// Profile-aware: X-Profile-Id header controls which profile's data is returned.
+// When null (combined), returns all profiles merged together.
+// ?view=combined   legacy: also includes household member estimates
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const viewCombined = req.query.view === 'combined';
+        const profileId = req.profileId; // null = aggregate all profiles
 
         const [accountsResult, propertiesResult, otherAssetsResult, snapshotsResult, valuesResult, householdResult] = await Promise.all([
             query(
@@ -20,8 +23,9 @@ router.get('/', requireAuth, async (req, res) => {
                         archived_at, institution
                  FROM accounts
                  WHERE user_id = $1
+                   AND ($2::int IS NULL OR profile_id = $2)
                  ORDER BY balance DESC`,
-                [req.user.id]
+                [req.user.id, profileId]
             ),
             query(
                 `SELECT id, name, property_type, estimated_value, mortgage_balance,
@@ -29,8 +33,9 @@ router.get('/', requireAuth, async (req, res) => {
                         ownership_pct, commission_rate, sale_costs
                  FROM properties
                  WHERE user_id = $1 AND archived_at IS NULL
+                   AND ($2::int IS NULL OR profile_id = $2)
                  ORDER BY is_primary_residence DESC, created_at`,
-                [req.user.id]
+                [req.user.id, profileId]
             ),
             query(
                 `SELECT id, name, asset_type, estimated_value, ownership_pct,
@@ -38,25 +43,28 @@ router.get('/', requireAuth, async (req, res) => {
                         expected_sale_age, expected_sale_value
                  FROM other_assets
                  WHERE user_id = $1 AND archived_at IS NULL
+                   AND ($2::int IS NULL OR profile_id = $2)
                  ORDER BY created_at`,
-                [req.user.id]
+                [req.user.id, profileId]
             ),
             query(
                 `SELECT total, snapped_at
                  FROM snapshots
                  WHERE user_id = $1
+                   AND ($2::int IS NULL OR profile_id = $2)
                  ORDER BY snapped_at`,
-                [req.user.id]
+                [req.user.id, profileId]
             ),
             query(
                 `SELECT pv.property_id, pv.estimated_value, pv.recorded_date
                  FROM property_values pv
                  JOIN properties p ON p.id = pv.property_id
                  WHERE p.user_id = $1 AND p.archived_at IS NULL
+                   AND ($2::int IS NULL OR p.profile_id = $2)
                  ORDER BY pv.recorded_date`,
-                [req.user.id]
+                [req.user.id, profileId]
             ),
-            // Always fetch household so summary endpoint works
+            // Always fetch household so legacy combined view still works
             query(
                 `SELECT estimated_assets, estimated_liabilities, monthly_income,
                         social_security_monthly, pension_monthly, include_in_combined, name

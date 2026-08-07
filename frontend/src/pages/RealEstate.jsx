@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 
 import apiClient from '../api/client';
+import { useActiveProfile } from '../store/useActiveProfile';
 import ConfirmDialog from '../components/shared/ConfirmDialog';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
@@ -496,11 +497,12 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
 
 export default function RealEstate() {
   const queryClient = useQueryClient();
+  const pid = useActiveProfile();
   const [modal, setModal] = useState(null); // {mode:'add'} | {mode:'edit',property} | {mode:'value',property}
   const [archiveTarget, setArchiveTarget] = useState(null);
 
   const propertiesQuery = useQuery({
-    queryKey: ['properties'],
+    queryKey: ['properties', pid],
     queryFn: async () => (await apiClient.get('/properties')).data,
   });
 

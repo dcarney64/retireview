@@ -8,7 +8,6 @@ import {
   Target,
   TrendingUp,
   Upload,
-  Users,
   Wallet,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
@@ -20,7 +19,6 @@ const mainItems = [
   { label: 'Net Worth',    path: '/net-worth',    icon: TrendingUp      },
   { label: 'Performance',  path: '/performance',  icon: LineChart       },
   { label: 'Real Estate',  path: '/real-estate',  icon: Building2       },
-  { label: 'Household',    path: '/household',    icon: Users           },
   { label: 'Other Assets', path: '/other-assets', icon: Briefcase       },
   { label: 'Accounts',     path: '/accounts',     icon: Wallet          },
   { label: 'Import Data',  path: '/import',       icon: Upload          },

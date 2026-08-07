@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile, writeProfileId } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -24,14 +25,15 @@ function withComputed(row) {
 }
 
 // GET /api/other-assets/summary
-router.get('/summary', requireAuth, async (req, res) => {
+router.get('/summary', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT ${ASSET_COLUMNS}
              FROM other_assets
              WHERE user_id = $1 AND archived_at IS NULL
+               AND ($2::int IS NULL OR profile_id = $2)
              ORDER BY created_at`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
         const assets = result.rows.map(withComputed);
         const totalValue = assets.reduce((s, a) => s + Number(a.estimated_value), 0);
@@ -53,14 +55,15 @@ router.get('/summary', requireAuth, async (req, res) => {
 });
 
 // GET /api/other-assets — list assets
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT ${ASSET_COLUMNS}
              FROM other_assets
              WHERE user_id = $1
+               AND ($2::int IS NULL OR profile_id = $2)
              ORDER BY archived_at NULLS FIRST, created_at`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
         return res.json(result.rows.map(withComputed));
     } catch (error) {
@@ -69,7 +72,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // POST /api/other-assets — create
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const body = req.body || {};
         if (!body.name || !String(body.name).trim()) {
@@ -81,13 +84,14 @@ router.post('/', requireAuth, async (req, res) => {
 
         const created = await query(
             `INSERT INTO other_assets
-                 (user_id, name, asset_type, description, estimated_value,
+                 (user_id, profile_id, name, asset_type, description, estimated_value,
                   ownership_pct, generates_income, monthly_income, income_description,
                   expected_sale_age, expected_sale_value, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
              RETURNING ${ASSET_COLUMNS}`,
             [
                 req.user.id,
+                writeProfileId(req),
                 String(body.name).trim(),
                 ASSET_TYPES.includes(body.asset_type) ? body.asset_type : 'business',
                 body.description?.trim() || null,
@@ -108,7 +112,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PUT /api/other-assets/:id — update
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const body = req.body || {};
         const existing = await query(
@@ -163,7 +167,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE /api/other-assets/:id — soft delete (archive)
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const archived = await query(
             `UPDATE other_assets SET archived_at = NOW(), updated_at = NOW()

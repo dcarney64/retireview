@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 import { useAuthStore } from '../store/authStore';
+import { useProfileStore } from '../store/profileStore';
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
@@ -13,6 +14,12 @@ apiClient.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
+  // Attach the active profile header so every API call is automatically scoped.
+  // Routes that don't care about profiles simply ignore it.
+  const profileId = useProfileStore.getState().activeProfileId;
+  config.headers['X-Profile-Id'] = profileId === null ? 'combined' : String(profileId);
+
   return config;
 });
 

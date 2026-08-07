@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -8,7 +9,7 @@ const router = Router();
 const TRANSFER_TYPES = ['deposit', 'withdrawal', 'transfer_in', 'transfer_out'];
 
 // List all transfers for the authenticated user, newest first.
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT t.id,
@@ -23,8 +24,9 @@ router.get('/', requireAuth, async (req, res) => {
              FROM account_transfers t
              JOIN accounts a ON a.id = t.account_id
              WHERE t.user_id = $1
+               AND ($2::int IS NULL OR a.profile_id = $2)
              ORDER BY t.transferred_at DESC, t.created_at DESC`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
         return res.json(result.rows);
     } catch (error) {
@@ -34,7 +36,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 // Log a new cash flow event.
 // amount is always passed as a positive number; the sign is derived from transfer_type.
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const { accountId, amount, transferType, transferredAt, notes } = req.body || {};
 
@@ -81,7 +83,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // Delete a single transfer by id.
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const deleted = await query(
             `DELETE FROM account_transfers WHERE id = $1 AND user_id = $2 RETURNING id`,

@@ -9,6 +9,7 @@ import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { ACCOUNT_TYPES, formatCurrency, typeColor } from '../lib/accountTypes';
 import { useAuthStore } from '../store/authStore';
+import { useActiveProfile } from '../store/useActiveProfile';
 
 // ─── 3-state status control ───────────────────────────────────────────────────
 
@@ -758,6 +759,7 @@ function AccountModal({ account, onClose, onSaved, onArchived }) {
 export default function Accounts() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
+  const pid  = useActiveProfile();
   const [activeTab, setActiveTab]       = useState('active');  // 'active' | 'archived'
   const [addOpen, setAddOpen]           = useState(false);
   const [modalAccount, setModalAccount] = useState(null);
@@ -765,7 +767,7 @@ export default function Accounts() {
   const [transferOpen, setTransferOpen] = useState(false);
 
   const accountsQuery = useQuery({
-    queryKey: ['accounts'],
+    queryKey: ['accounts', pid],
     queryFn: async () => (await apiClient.get('/accounts')).data,
   });
 

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 import { backfillPortfolioHistory, detectAndInsertComposerDeposits } from '../services/composerService.js';
 import { reconstructHistoryForUser } from '../services/historyReconstructService.js';
@@ -239,9 +240,10 @@ function computeWindowStats(allSeries, allTransfers) {
  *   bestMonth         – monthly return row with the highest return_decimal
  *   worstMonth        – monthly return row with the lowest return_decimal
  */
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const userId = req.user.id;
+        const profileId = req.profileId; // null = combined across all profiles
 
         const [snapshotsResult, transfersResult, composerHistResult, nonComposerSnapsResult] =
             await Promise.all([
@@ -260,9 +262,10 @@ router.get('/', requireAuth, async (req, res) => {
                      LEFT JOIN account_snapshots asn ON asn.snapshot_id = s.id
                      LEFT JOIN accounts a            ON a.id = asn.account_id
                      WHERE s.user_id = $1
+                       AND ($2::int IS NULL OR s.profile_id = $2)
                      GROUP BY s.id, s.snapped_at, s.total
                      ORDER BY s.snapped_at ASC`,
-                    [userId]
+                    [userId, profileId]
                 ),
                 // ── Transfers for TWR ──────────────────────────────────────────────
                 query(
@@ -277,8 +280,9 @@ router.get('/', requireAuth, async (req, res) => {
                      FROM account_transfers t
                      JOIN accounts a ON a.id = t.account_id
                      WHERE t.user_id = $1
+                       AND ($2::int IS NULL OR a.profile_id = $2)
                      ORDER BY t.transferred_at ASC`,
-                    [userId]
+                    [userId, profileId]
                 ),
                 // ── Composer daily NAV from portfolio_history ──────────────────────
                 query(
@@ -291,8 +295,9 @@ router.get('/', requireAuth, async (req, res) => {
                      JOIN accounts a ON a.id = ph.account_id
                      WHERE ph.user_id = $1
                        AND a.include_in_tracking = true
+                       AND ($2::int IS NULL OR a.profile_id = $2)
                      ORDER BY ph.history_date ASC, a.name ASC`,
-                    [userId]
+                    [userId, profileId]
                 ),
                 // ── Non-Composer per-account snapshot balances ─────────────────────
                 query(
@@ -308,8 +313,9 @@ router.get('/', requireAuth, async (req, res) => {
                      WHERE s.user_id = $1
                        AND a.source != 'composer'
                        AND a.include_in_tracking = true
+                       AND ($2::int IS NULL OR s.profile_id = $2)
                      ORDER BY s.snapped_at ASC, a.name ASC`,
-                    [userId]
+                    [userId, profileId]
                 ),
             ]);
 

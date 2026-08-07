@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
+import { requireProfile, writeProfileId } from '../middleware/profile.js';
 import { query } from '../db/client.js';
 
 const router = Router();
@@ -77,14 +78,15 @@ async function recordValue(propertyId, estimatedValue, recordedDate, source, not
     );
 }
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const result = await query(
             `SELECT ${PROPERTY_COLUMNS}
              FROM properties
              WHERE user_id = $1
+               AND ($2::int IS NULL OR profile_id = $2)
              ORDER BY is_primary_residence DESC, created_at`,
-            [req.user.id]
+            [req.user.id, req.profileId]
         );
 
         const properties = result.rows.map(withComputed);
@@ -107,7 +109,7 @@ router.get('/', requireAuth, async (req, res) => {
     }
 });
 
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requireProfile, async (req, res) => {
     try {
         const body = req.body || {};
         const invalid = validatePropertyInput(body);
@@ -117,14 +119,15 @@ router.post('/', requireAuth, async (req, res) => {
 
         const created = await query(
             `INSERT INTO properties
-                 (user_id, name, property_type, address, estimated_value, purchase_price,
+                 (user_id, profile_id, name, property_type, address, estimated_value, purchase_price,
                   purchase_date, mortgage_balance, mortgage_payment, mortgage_rate,
                   mortgage_maturity_date, rental_income, rental_frequency, notes,
                   is_primary_residence, ownership_pct, commission_rate, sale_costs)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
              RETURNING ${PROPERTY_COLUMNS}`,
             [
                 req.user.id,
+                writeProfileId(req),
                 String(body.name).trim(),
                 PROPERTY_TYPES.includes(body.property_type) ? body.property_type : 'residential',
                 body.address?.trim() || null,
@@ -155,7 +158,7 @@ router.post('/', requireAuth, async (req, res) => {
     }
 });
 
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const body = req.body || {};
         const invalid = validatePropertyInput(body, { partial: true });
@@ -239,7 +242,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // Soft delete — archived properties drop out of totals but keep history
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requireProfile, async (req, res) => {
     try {
         const archived = await query(
             `UPDATE properties SET archived_at = NOW(), updated_at = NOW()
@@ -258,7 +261,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     }
 });
 
-router.post('/:id/value-update', requireAuth, async (req, res) => {
+router.post('/:id/value-update', requireAuth, requireProfile, async (req, res) => {
     try {
         const { estimated_value, recorded_date, notes } = req.body || {};
 
@@ -286,7 +289,7 @@ router.post('/:id/value-update', requireAuth, async (req, res) => {
     }
 });
 
-router.get('/:id/history', requireAuth, async (req, res) => {
+router.get('/:id/history', requireAuth, requireProfile, async (req, res) => {
     try {
         const owner = await query(
             `SELECT id, purchase_price, purchase_date FROM properties WHERE id = $1 AND user_id = $2`,

@@ -20,6 +20,7 @@ import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { formatCurrency } from '../lib/accountTypes';
+import { useActiveProfile } from '../store/useActiveProfile';
 
 const CARD_SURFACE = '#0f172a';
 // Cycle for newly created scenarios (validated categorical steps on slate-900)
@@ -402,6 +403,7 @@ function SwrSection({ scenario }) {
 
 export default function Retirement() {
   const queryClient = useQueryClient();
+  const pid = useActiveProfile();
   const [selectedId, setSelectedId] = useState(null);
   const [form, setForm] = useState(null);
   const [error, setError] = useState('');
@@ -409,15 +411,15 @@ export default function Retirement() {
   const [showRunway, setShowRunway] = useState(false);
 
   const scenariosQuery = useQuery({
-    queryKey: ['scenarios'],
+    queryKey: ['scenarios', pid],
     queryFn: async () => (await apiClient.get('/scenarios')).data,
   });
   const accountsQuery = useQuery({
-    queryKey: ['accounts'],
+    queryKey: ['accounts', pid],
     queryFn: async () => (await apiClient.get('/accounts')).data,
   });
   const propertiesQuery = useQuery({
-    queryKey: ['properties'],
+    queryKey: ['properties', pid],
     queryFn: async () => (await apiClient.get('/properties')).data,
   });
   const householdQuery = useQuery({
@@ -454,7 +456,7 @@ export default function Retirement() {
 
   const projectionQueries = useQueries({
     queries: scenarios.map((s) => ({
-      queryKey: ['projection', s.id, s.updated_at],
+      queryKey: ['projection', s.id, s.updated_at, pid],
       queryFn: async () => (await apiClient.get(`/scenarios/${s.id}/projection`)).data,
       staleTime: 60_000,
     })),
