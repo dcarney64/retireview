@@ -134,6 +134,10 @@ export default function Dashboard() {
     queryKey: ['scenarios', pid],
     queryFn: async () => (await apiClient.get('/scenarios')).data,
   });
+  const cashflowQuery = useQuery({
+    queryKey: ['cashflow-summary', pid],
+    queryFn: async () => (await apiClient.get('/cashflow/summary')).data,
+  });
   const activeScenario = (scenariosQuery.data || []).find((s) => s.is_active) || null;
   const projectionQuery = useQuery({
     queryKey: ['projection', activeScenario?.id, activeScenario?.updated_at, pid],
@@ -310,6 +314,55 @@ export default function Dashboard() {
           total={total}
         />
       </Card>
+
+      {/* Cash Flow summary card */}
+      {cashflowQuery.data && (
+        <Card>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="mb-3 text-lg font-semibold">💵 Monthly Cash Flow</h3>
+              <div className="space-y-1 text-sm">
+                <div className="flex items-center gap-8">
+                  <span className="w-36 text-slate-400">Income (net)</span>
+                  <span className="font-medium text-slate-100">
+                    {formatCurrency(cashflowQuery.data.today?.income?.net ?? 0)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-8">
+                  <span className="w-36 text-slate-400">Expenses</span>
+                  <span className="font-medium text-rose-300">
+                    -{formatCurrency(cashflowQuery.data.today?.expenses?.total ?? 0)}
+                  </span>
+                </div>
+                <div className="my-2 h-px bg-slate-800" />
+                <div className="flex items-center gap-8">
+                  <span className="w-36 text-slate-400">Disposable</span>
+                  <span className={`font-bold text-base ${(cashflowQuery.data.today?.disposable ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {formatCurrency(cashflowQuery.data.today?.disposable ?? 0)}/mo
+                  </span>
+                </div>
+                {cashflowQuery.data.today?.savingsRate > 0 && (
+                  <div className="flex items-center gap-8">
+                    <span className="w-36 text-slate-400">Savings rate</span>
+                    <span className="text-slate-300">{cashflowQuery.data.today.savingsRate}%</span>
+                  </div>
+                )}
+                {cashflowQuery.data.atRetirement?.disposable != null && (
+                  <div className="mt-2 flex items-center gap-8">
+                    <span className="w-36 text-slate-500 text-xs">At retirement</span>
+                    <span className="text-xs text-slate-400">
+                      {formatCurrency(cashflowQuery.data.atRetirement.disposable)}/mo disposable
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+            <Link to="/cash-flow" className="shrink-0 text-sm text-sky-400 hover:underline whitespace-nowrap">
+              View Cash Flow →
+            </Link>
+          </div>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
         <Card className="xl:col-span-3">

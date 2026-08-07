@@ -1,4 +1,5 @@
 import {
+  ArrowLeftRight,
   Briefcase,
   Building2,
   LayoutDashboard,
@@ -24,6 +25,7 @@ const mainItems = [
   { label: 'Import Data',  path: '/import',       icon: Upload          },
   { label: 'Retirement',   path: '/retirement',   icon: Target          },
   { label: 'Income',       path: '/income',       icon: RefreshCw       },
+  { label: 'Cash Flow',   path: '/cash-flow',    icon: ArrowLeftRight  },
   { label: 'Tax Planning', path: '/tax-planning', icon: Receipt         },
 ];
 

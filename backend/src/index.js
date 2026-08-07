@@ -27,6 +27,7 @@ import profilesRoutes from './routes/profiles.js';
 import importRoutes from './routes/import.js';
 import goalsRoutes from './routes/goals.js';
 import incomeRoutes from './routes/income.js';
+import cashflowRoutes from './routes/cashflow.js';
 import recurringIncomeRoutes from './routes/recurringIncome.js';
 import netWorthRoutes from './routes/netWorth.js';
 import otherAssetsRoutes from './routes/otherAssets.js';
@@ -119,6 +120,7 @@ app.use('/api/scenarios', scenariosRoutes);
 app.use('/api/tax', taxRoutes);
 app.use('/api/income', incomeRoutes);
 app.use('/api/recurring-income', recurringIncomeRoutes);
+app.use('/api/cashflow', cashflowRoutes);
 app.use('/api/reports', reportsRoutes);
 
 app.get('/health', (_req, res) => {

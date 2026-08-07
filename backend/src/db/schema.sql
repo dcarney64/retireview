@@ -778,3 +778,49 @@ CREATE TABLE IF NOT EXISTS recurring_income (
 
 CREATE INDEX IF NOT EXISTS idx_recurring_income_user    ON recurring_income(user_id);
 CREATE INDEX IF NOT EXISTS idx_recurring_income_profile ON recurring_income(profile_id);
+
+-- ============================================================
+-- CASH FLOW (v0.7.0) — gross income tracking + monthly expenses
+-- ============================================================
+
+-- Add gross_monthly_amount to recurring_income.
+-- If null:  monthly_amount IS the net (take-home) amount.
+-- If set:   monthly_amount = net, gross_monthly_amount = before-tax.
+ALTER TABLE recurring_income
+  ADD COLUMN IF NOT EXISTS gross_monthly_amount NUMERIC(15,2);
+
+-- Monthly expenses for cash flow tracking.
+CREATE TABLE IF NOT EXISTS monthly_expenses (
+  id              SERIAL PRIMARY KEY,
+  user_id         UUID NOT NULL
+                  REFERENCES users(id)
+                  ON DELETE CASCADE,
+  profile_id      INTEGER
+                  REFERENCES profiles(id)
+                  ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  category        TEXT NOT NULL DEFAULT 'other',
+  -- 'housing'|'utilities'|'insurance'|'food'|'transport'|
+  -- 'healthcare'|'entertainment'|'travel'|'debt'|
+  -- 'subscriptions'|'other'
+  monthly_amount  NUMERIC(15,2) NOT NULL,
+
+  -- Retirement behaviour
+  continues_in_retirement  BOOLEAN DEFAULT true,
+  retirement_amount        NUMERIC(15,2),
+  -- null + continues=true → use monthly_amount
+  -- set                   → use this in retirement
+
+  -- Source tracking (prevents double-count with RE)
+  source          TEXT DEFAULT 'manual',
+  -- 'manual' | 'real_estate'
+  source_id       TEXT,
+
+  is_active       BOOLEAN DEFAULT true,
+  notes           TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_expenses_user    ON monthly_expenses(user_id);
+CREATE INDEX IF NOT EXISTS idx_expenses_profile ON monthly_expenses(profile_id);

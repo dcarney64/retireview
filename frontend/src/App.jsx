@@ -13,6 +13,7 @@ import Connections from './pages/Connections';
 import Dashboard from './pages/Dashboard';
 // Household page replaced by Settings → Household Members (v0.5.0)
 import Import from './pages/Import';
+import CashFlow from './pages/CashFlow';
 import Income from './pages/Income';
 import NetWorth from './pages/NetWorth';
 import OtherAssets from './pages/OtherAssets';
@@ -67,7 +68,8 @@ export default function App() {
         <Route path="/accounts" element={<AppShell><Page><Accounts /></Page></AppShell>} />
         <Route path="/retirement" element={<AppShell><Page><Retirement /></Page></AppShell>} />
         <Route path="/tax-planning" element={<AppShell><Page><TaxPlanning /></Page></AppShell>} />
-        <Route path="/income" element={<AppShell><Page><Income /></Page></AppShell>} />
+        <Route path="/income"     element={<AppShell><Page><Income /></Page></AppShell>} />
+        <Route path="/cash-flow" element={<AppShell><Page><CashFlow /></Page></AppShell>} />
         <Route path="/report" element={<AppShell><Page><Report /></Page></AppShell>} />
         {/* Legacy redirect — Goal page became Retirement */}
         <Route path="/goal" element={<Navigate to="/retirement" replace />} />

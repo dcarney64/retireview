@@ -251,18 +251,25 @@ router.post('/', requireAuth, requireProfile, async (req, res) => {
         const effectiveEndType   = END_TYPES.includes(end_type)     ? end_type   : 'lifetime';
         const effectiveTax       = TAX_TYPES.includes(tax_treatment) ? tax_treatment : 'taxable';
 
+        const body2 = req.body || {};
+        const _gma = body2.gross_monthly_amount;
+        const gross_monthly_amount = (_gma !== undefined && _gma !== '' && _gma !== null)
+            ? Number(_gma) : null;
+
         const { rows } = await query(
             `INSERT INTO recurring_income
                 (user_id, profile_id, name, income_type, monthly_amount,
+                 gross_monthly_amount,
                  start_type, start_age, start_date,
                  end_type, end_age, end_date, end_years,
                  is_inflation_adjusted, annual_increase_pct,
                  tax_treatment, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
              RETURNING *`,
             [
                 req.user.id, writeProfileId(req),
                 name.trim(), income_type, Number(monthly_amount),
+                gross_monthly_amount,
                 effectiveStartType, start_age || null, start_date || null,
                 effectiveEndType, end_age || null, end_date || null, end_years || null,
                 Boolean(is_inflation_adjusted), Number(annual_increase_pct) || 0,
@@ -304,19 +311,26 @@ router.put('/:id', requireAuth, requireProfile, async (req, res) => {
         const effectiveEndType   = END_TYPES.includes(end_type)     ? end_type   : 'lifetime';
         const effectiveTax       = TAX_TYPES.includes(tax_treatment) ? tax_treatment : 'taxable';
 
+        const putBody = req.body || {};
+        const _gmaPut = putBody.gross_monthly_amount;
+        const gross_monthly_amount_put = (_gmaPut !== undefined && _gmaPut !== '' && _gmaPut !== null)
+            ? Number(_gmaPut) : null;
+
         const { rows } = await query(
             `UPDATE recurring_income SET
                 name = $3, income_type = $4, monthly_amount = $5,
-                start_type = $6, start_age = $7, start_date = $8,
-                end_type = $9, end_age = $10, end_date = $11, end_years = $12,
-                is_inflation_adjusted = $13, annual_increase_pct = $14,
-                tax_treatment = $15, is_active = $16, notes = $17,
+                gross_monthly_amount = $6,
+                start_type = $7, start_age = $8, start_date = $9,
+                end_type = $10, end_age = $11, end_date = $12, end_years = $13,
+                is_inflation_adjusted = $14, annual_increase_pct = $15,
+                tax_treatment = $16, is_active = $17, notes = $18,
                 updated_at = NOW()
              WHERE id = $1 AND user_id = $2
              RETURNING *`,
             [
                 req.params.id, req.user.id,
                 name.trim(), income_type, Number(monthly_amount) || 0,
+                gross_monthly_amount_put,
                 effectiveStartType, start_age || null, start_date || null,
                 effectiveEndType, end_age || null, end_date || null, end_years || null,
                 Boolean(is_inflation_adjusted), Number(annual_increase_pct) || 0,

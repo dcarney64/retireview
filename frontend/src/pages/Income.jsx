@@ -56,6 +56,7 @@ const EMPTY_FORM = {
   name:                  '',
   income_type:           'social_security',
   monthly_amount:        '',
+  gross_monthly_amount:  '',
   start_type:            'age',
   start_age:             '',
   start_date:            '',
@@ -404,7 +405,7 @@ function IncomeModal({ initial, onClose, onSaved }) {
                   ))}
                 </select>
               </Field>
-              <Field label="Monthly Amount ($)">
+              <Field label="Net monthly amount — take-home ($)">
                 <Input
                   type="number"
                   min="0"
@@ -413,6 +414,25 @@ function IncomeModal({ initial, onClose, onSaved }) {
                   onChange={set('monthly_amount')}
                   placeholder="3500"
                 />
+                <p className="text-xs text-slate-500">What actually hits your bank account after taxes &amp; deductions.</p>
+              </Field>
+              <Field label="Gross monthly amount — before tax (optional)">
+                <Input
+                  type="number"
+                  min="0"
+                  step="100"
+                  value={form.gross_monthly_amount}
+                  onChange={set('gross_monthly_amount')}
+                  placeholder="leave blank if unknown"
+                />
+                {form.gross_monthly_amount && form.monthly_amount &&
+                 Number(form.gross_monthly_amount) > 0 && Number(form.monthly_amount) > 0 && (
+                  <p className="text-xs text-slate-400">
+                    Effective rate:{' '}
+                    {Math.round((Number(form.monthly_amount) / Number(form.gross_monthly_amount)) * 100)}%
+                    (gross → net)
+                  </p>
+                )}
               </Field>
             </>
           )}
@@ -644,6 +664,7 @@ function formFromSrc(src) {
     annual_increase_pct:   String(src.annual_increase_pct ?? '0'),
     tax_treatment:         src.tax_treatment || 'taxable',
     notes:                 src.notes || '',
+    gross_monthly_amount:  src.gross_monthly_amount != null ? String(src.gross_monthly_amount) : '',
   };
 }
 
@@ -652,6 +673,7 @@ function buildPayload(form) {
     name:                  form.name.trim(),
     income_type:           form.income_type,
     monthly_amount:        Number(form.monthly_amount) || 0,
+    gross_monthly_amount:  form.gross_monthly_amount !== '' ? Number(form.gross_monthly_amount) : null,
     start_type:            form.start_type,
     start_age:             form.start_type === 'age'  ? Number(form.start_age) || null : null,
     start_date:            form.start_type === 'date' ? form.start_date || null        : null,
