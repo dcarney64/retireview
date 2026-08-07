@@ -88,10 +88,11 @@ export default function NetWorth() {
 
   const allocation = useMemo(() => {
     if (!data) return [];
+    const otherAssetsTotal = data.otherAssets?.total || 0;
     return [
       { name: 'Liquid investments', value: data.liquid.total, fill: COLOR_LIQUID },
-      { name: 'Real estate', value: data.realEstate.totalValue, fill: COLOR_RE },
-      { name: 'Other assets', value: data.other.total, fill: COLOR_OTHER },
+      { name: 'Real estate equity', value: data.realEstate.totalEquity, fill: COLOR_RE },
+      { name: 'Other assets', value: otherAssetsTotal + data.other.total, fill: COLOR_OTHER },
       { name: 'Liabilities', value: data.liabilities.total, fill: COLOR_LIABILITY },
     ].filter((d) => d.value > 0);
   }, [data]);
@@ -121,9 +122,9 @@ export default function NetWorth() {
     );
   }
 
-  const { liquid, realEstate, other, liabilities, totalAssets, netWorth, history } = data;
+  const { liquid, realEstate, otherAssets, other, liabilities, totalAssets, netWorth, history } = data;
 
-  if (liquid.accounts.length === 0 && realEstate.properties.length === 0 && other.accounts.length === 0) {
+  if (liquid.accounts.length === 0 && realEstate.properties.length === 0 && other.accounts.length === 0 && (!otherAssets || otherAssets.assets.length === 0)) {
     return (
       <div className="space-y-6">
         <h2 className="text-2xl font-semibold">Net Worth</h2>
@@ -162,16 +163,35 @@ export default function NetWorth() {
 
             {realEstate.properties.length > 0 ? (
               <>
-                <BreakdownRow color={COLOR_RE} label="Real Estate" value={realEstate.totalValue} pct={pctOfNet(realEstate.totalValue)} />
+                <BreakdownRow color={COLOR_RE} label="Real Estate Equity" value={realEstate.totalEquity} pct={pctOfNet(realEstate.totalEquity)} />
                 {realEstate.properties.map((p) => (
-                  <SubRow key={p.id} label={p.name} value={p.estimated_value} />
+                  <SubRow key={p.id} label={p.name} value={p.yourEquity ?? p.equity ?? Number(p.estimated_value)} />
                 ))}
+                {realEstate.netEquityIfSold != null && realEstate.netEquityIfSold !== realEstate.totalEquity ? (
+                  <div className="ml-5 text-xs text-slate-500 py-0.5">
+                    Net of selling costs: {formatCurrency(realEstate.netEquityIfSold)}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+
+            {otherAssets && otherAssets.assets.length > 0 ? (
+              <>
+                <BreakdownRow color={COLOR_OTHER} label="Other Assets" value={otherAssets.total} pct={pctOfNet(otherAssets.total)} />
+                {otherAssets.assets.map((a) => (
+                  <SubRow key={a.id} label={a.name} value={a.yourShare} />
+                ))}
+                {otherAssets.monthlyIncome > 0 ? (
+                  <div className="ml-5 text-xs text-emerald-500 py-0.5">
+                    + {formatCurrency(otherAssets.monthlyIncome)}/mo business income
+                  </div>
+                ) : null}
               </>
             ) : null}
 
             {other.accounts.length > 0 ? (
               <>
-                <BreakdownRow color={COLOR_OTHER} label="Other Assets" value={other.total} pct={pctOfNet(other.total)} />
+                <BreakdownRow color={COLOR_OTHER} label="Other Accounts" value={other.total} pct={pctOfNet(other.total)} />
                 {other.accounts.map((a) => (
                   <SubRow
                     key={a.id}

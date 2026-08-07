@@ -11,9 +11,11 @@ import Accounts from './pages/Accounts';
 import BrokerSettings from './pages/BrokerSettings';
 import Connections from './pages/Connections';
 import Dashboard from './pages/Dashboard';
+import Household from './pages/Household';
 import Import from './pages/Import';
 import Income from './pages/Income';
 import NetWorth from './pages/NetWorth';
+import OtherAssets from './pages/OtherAssets';
 import Performance from './pages/Performance';
 import RealEstate from './pages/RealEstate';
 import Report from './pages/Report';
@@ -59,6 +61,8 @@ export default function App() {
         <Route path="/performance" element={<AppShell><Page><Performance /></Page></AppShell>} />
         <Route path="/net-worth" element={<AppShell><Page><NetWorth /></Page></AppShell>} />
         <Route path="/real-estate" element={<AppShell><Page><RealEstate /></Page></AppShell>} />
+        <Route path="/household" element={<AppShell><Page><Household /></Page></AppShell>} />
+        <Route path="/other-assets" element={<AppShell><Page><OtherAssets /></Page></AppShell>} />
         <Route path="/accounts" element={<AppShell><Page><Accounts /></Page></AppShell>} />
         <Route path="/retirement" element={<AppShell><Page><Retirement /></Page></AppShell>} />
         <Route path="/tax-planning" element={<AppShell><Page><TaxPlanning /></Page></AppShell>} />

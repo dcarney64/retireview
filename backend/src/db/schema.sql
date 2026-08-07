@@ -507,3 +507,77 @@ CREATE INDEX IF NOT EXISTS idx_income_events_date ON income_events(event_date);
 ALTER TABLE users
   ADD COLUMN IF NOT EXISTS email_digest_enabled BOOLEAN DEFAULT true,
   ADD COLUMN IF NOT EXISTS digest_frequency TEXT DEFAULT 'weekly';
+
+-- ============================================================
+-- HOUSEHOLD MEMBERS
+-- Track spouse/partner/dependent financial data for combined view.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS household_members (
+  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                 UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name                    TEXT NOT NULL,
+  relationship            TEXT DEFAULT 'spouse',
+  birth_year              INTEGER,
+  current_age             INTEGER,
+  employment_status       TEXT DEFAULT 'employed',
+  monthly_income          NUMERIC(15,2) DEFAULT 0,
+  social_security_monthly NUMERIC(15,2) DEFAULT 0,
+  social_security_age     INTEGER DEFAULT 67,
+  pension_monthly         NUMERIC(15,2) DEFAULT 0,
+  retirement_age          INTEGER DEFAULT 67,
+  estimated_assets        NUMERIC(15,2) DEFAULT 0,
+  estimated_liabilities   NUMERIC(15,2) DEFAULT 0,
+  include_in_combined     BOOLEAN DEFAULT true,
+  notes                   TEXT,
+  created_at              TIMESTAMPTZ DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_household_user ON household_members(user_id);
+
+-- ============================================================
+-- OTHER ASSETS
+-- Business interests, IP, vehicles, collectibles, etc.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS other_assets (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name                TEXT NOT NULL,
+  asset_type          TEXT DEFAULT 'business',
+  description         TEXT,
+  estimated_value     NUMERIC(15,2) NOT NULL DEFAULT 0,
+  ownership_pct       NUMERIC(5,2) DEFAULT 100.00,
+  generates_income    BOOLEAN DEFAULT false,
+  monthly_income      NUMERIC(15,2) DEFAULT 0,
+  income_description  TEXT,
+  expected_sale_age   INTEGER,
+  expected_sale_value NUMERIC(15,2),
+  notes               TEXT,
+  archived_at         TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_other_assets_user ON other_assets(user_id);
+
+-- ============================================================
+-- RETIREMENT SCENARIOS — spouse/partner income fields
+-- ============================================================
+ALTER TABLE retirement_scenarios
+  ADD COLUMN IF NOT EXISTS include_spouse       BOOLEAN DEFAULT false;
+ALTER TABLE retirement_scenarios
+  ADD COLUMN IF NOT EXISTS spouse_ss_monthly    NUMERIC(15,2) DEFAULT 0;
+ALTER TABLE retirement_scenarios
+  ADD COLUMN IF NOT EXISTS spouse_ss_age        INTEGER DEFAULT 67;
+ALTER TABLE retirement_scenarios
+  ADD COLUMN IF NOT EXISTS spouse_pension_monthly NUMERIC(15,2) DEFAULT 0;
+ALTER TABLE retirement_scenarios
+  ADD COLUMN IF NOT EXISTS spouse_retirement_age  INTEGER DEFAULT 67;
+
+-- ============================================================
+-- PROPERTIES — partial ownership and selling-cost estimates
+-- ============================================================
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS ownership_pct   NUMERIC(5,2) DEFAULT 100.00;
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS commission_rate NUMERIC(5,2) DEFAULT 6.00;
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS sale_costs      NUMERIC(15,2) DEFAULT 0;

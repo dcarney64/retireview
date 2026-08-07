@@ -86,9 +86,19 @@ function GoalProgress({ goal, scenarioTarget, scenarioName, total }) {
   );
 }
 
+function getStoredView() {
+  try { return localStorage.getItem('dashboardView') || 'self'; } catch { return 'self'; }
+}
+
 export default function Dashboard() {
   const queryClient = useQueryClient();
   const [snapshotError, setSnapshotError] = useState('');
+  const [dashView, setDashView] = useState(getStoredView);
+
+  const switchView = (v) => {
+    setDashView(v);
+    try { localStorage.setItem('dashboardView', v); } catch {}
+  };
 
   const accountsQuery = useQuery({
     queryKey: ['accounts'],
@@ -103,8 +113,12 @@ export default function Dashboard() {
     queryFn: async () => (await apiClient.get('/goals')).data,
   });
   const netWorthQuery = useQuery({
-    queryKey: ['net-worth'],
-    queryFn: async () => (await apiClient.get('/net-worth')).data,
+    queryKey: ['net-worth', dashView],
+    queryFn: async () => (await apiClient.get(`/net-worth${dashView === 'combined' ? '?view=combined' : ''}`)).data,
+  });
+  const householdQuery = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await apiClient.get('/household')).data,
   });
   const scenariosQuery = useQuery({
     queryKey: ['scenarios'],
@@ -153,8 +167,11 @@ export default function Dashboard() {
 
   const netWorthData = netWorthQuery.data;
   const reEquity = netWorthData?.realEstate?.totalEquity || 0;
-  const otherTotal = netWorthData?.other?.total || 0;
+  const otherAssetsTotal = netWorthData?.otherAssets?.total || 0;
+  const otherAccountTotal = netWorthData?.other?.total || 0;
+  const otherTotal = otherAssetsTotal + otherAccountTotal;
   const totalNetWorth = netWorthData ? netWorthData.netWorth : total;
+  const hasHouseholdMembers = (householdQuery.data?.length ?? 0) > 0;
 
   const monthlyIncome = projectionQuery.data?.summary?.monthlyIncomeAtRetirement || null;
   const scenarioTarget = projectionQuery.data?.summary?.portfolioAtRetirement || null;
@@ -181,12 +198,35 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <div className="text-sm text-slate-400">Total net worth</div>
+          <div className="flex items-center gap-3">
+            <div className="text-sm text-slate-400">Total net worth</div>
+            {hasHouseholdMembers ? (
+              <div className="flex overflow-hidden rounded-md border border-slate-700 text-xs">
+                <button
+                  type="button"
+                  onClick={() => switchView('self')}
+                  className={`px-3 py-1 ${dashView === 'self' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+                >
+                  Self Only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchView('combined')}
+                  className={`px-3 py-1 border-l border-slate-700 ${dashView === 'combined' ? 'bg-sky-500 text-white' : 'text-slate-400 hover:bg-slate-800'}`}
+                >
+                  Combined
+                </button>
+              </div>
+            ) : null}
+          </div>
           <div className="text-4xl font-semibold text-slate-100">{formatCurrency(totalNetWorth)}</div>
           {netWorthData ? (
             <p className="mt-1 text-xs text-slate-500">
               {formatCurrency(netWorthData.liquid.total)} liquid + {formatCurrency(reEquity)} real estate equity
-              {otherTotal > 0 ? ` + ${formatCurrency(otherTotal)} other` : ''} ·{' '}
+              {otherAssetsTotal > 0 ? ` + ${formatCurrency(otherAssetsTotal)} other assets` : ''}
+              {otherAccountTotal > 0 ? ` + ${formatCurrency(otherAccountTotal)} other accts` : ''}
+              {dashView === 'combined' && netWorthData.household?.memberNetWorth > 0
+                ? ` + ${formatCurrency(netWorthData.household.memberNetWorth)} household` : ''} ·{' '}
               <Link to="/net-worth" className="underline hover:text-slate-300">breakdown</Link>
             </p>
           ) : excludedCount > 0 ? (

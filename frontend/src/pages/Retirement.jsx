@@ -31,13 +31,18 @@ const EDITOR_FIELDS = [
   'social_security_monthly', 'social_security_start_age', 'pension_monthly',
   'rental_income_monthly', 'other_income_monthly',
   'withdrawal_rate', 'withdrawal_type', 'fixed_withdrawal_amount', 'annual_spending_goal',
+  'include_spouse', 'spouse_ss_monthly', 'spouse_ss_age', 'spouse_pension_monthly', 'spouse_retirement_age',
 ];
 
 function scenarioToForm(scenario) {
   const form = {};
   for (const field of EDITOR_FIELDS) {
     const v = scenario?.[field];
-    form[field] = v == null ? '' : String(field === 'name' || field === 'withdrawal_type' ? v : Number(v));
+    if (field === 'include_spouse') {
+      form[field] = v === true;
+    } else {
+      form[field] = v == null ? '' : String(field === 'name' || field === 'withdrawal_type' ? v : Number(v));
+    }
   }
   if (!form.withdrawal_type) form.withdrawal_type = 'percentage';
   return form;
@@ -48,6 +53,7 @@ function formToPayload(form) {
   for (const field of EDITOR_FIELDS) {
     if (field === 'name') payload.name = form.name;
     else if (field === 'withdrawal_type') payload.withdrawal_type = form.withdrawal_type;
+    else if (field === 'include_spouse') payload.include_spouse = form.include_spouse === true;
     else payload[field] = form[field] === '' ? null : Number(form[field]);
   }
   return payload;
@@ -414,6 +420,12 @@ export default function Retirement() {
     queryKey: ['properties'],
     queryFn: async () => (await apiClient.get('/properties')).data,
   });
+  const householdQuery = useQuery({
+    queryKey: ['household'],
+    queryFn: async () => (await apiClient.get('/household')).data,
+  });
+  const householdMembers = householdQuery.data || [];
+  const firstSpouse = householdMembers.find((m) => m.relationship === 'spouse' || m.relationship === 'partner') || null;
 
   const scenarios = useMemo(() => scenariosQuery.data || [], [scenariosQuery.data]);
 
@@ -522,8 +534,11 @@ export default function Retirement() {
           ? {
               ss: first.socialSecurity / 12,
               pension: first.pensionIncome / 12,
+              spouseSS: (first.spouseSocialSecurity || 0) / 12,
+              spousePension: (first.spousePension || 0) / 12,
               rental: first.rentalIncome / 12,
               other: first.otherIncome / 12,
+              otherAsset: (first.otherAssetIncome || 0) / 12,
               portfolio: first.withdrawalAmount / 12,
             }
           : null;
@@ -651,6 +666,73 @@ export default function Retirement() {
             </div>
           </div>
 
+          {/* ── Spouse/Partner Income ──────────────────────── */}
+          <div className="mt-6 border-t border-slate-800 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Spouse / Partner Income</h4>
+              {firstSpouse && !form.include_spouse ? (
+                <button
+                  type="button"
+                  className="text-xs text-sky-400 hover:text-sky-300 hover:underline"
+                  onClick={() => {
+                    setForm((prev) => ({
+                      ...prev,
+                      include_spouse: true,
+                      spouse_ss_monthly: String(Number(firstSpouse.social_security_monthly) || 0),
+                      spouse_ss_age: String(firstSpouse.social_security_age || 67),
+                      spouse_pension_monthly: String(Number(firstSpouse.pension_monthly) || 0),
+                      spouse_retirement_age: String(firstSpouse.retirement_age || 67),
+                    }));
+                  }}
+                >
+                  Import from {firstSpouse.name}
+                </button>
+              ) : null}
+            </div>
+
+            <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={form.include_spouse === true}
+                onChange={(e) => setForm((prev) => ({ ...prev, include_spouse: e.target.checked }))}
+              />
+              Include spouse/partner retirement income
+            </label>
+
+            {form.include_spouse ? (
+              <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <NumField
+                  id="sc-spouse-ss"
+                  label="Spouse SS ($/mo)"
+                  min="0" step="100"
+                  value={form.spouse_ss_monthly}
+                  onChange={set('spouse_ss_monthly')}
+                />
+                <NumField
+                  id="sc-spouse-ss-age"
+                  label="Spouse SS from age"
+                  min="62" max="75"
+                  value={form.spouse_ss_age}
+                  onChange={set('spouse_ss_age')}
+                />
+                <NumField
+                  id="sc-spouse-pension"
+                  label="Spouse pension ($/mo)"
+                  min="0" step="100"
+                  value={form.spouse_pension_monthly}
+                  onChange={set('spouse_pension_monthly')}
+                />
+                <NumField
+                  id="sc-spouse-ret-age"
+                  label="Spouse retirement age"
+                  min="30" max="100"
+                  value={form.spouse_retirement_age}
+                  onChange={set('spouse_retirement_age')}
+                />
+              </div>
+            ) : null}
+          </div>
+
           <div className="mt-6 border-t border-slate-800 pt-4">
             <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Withdrawal Strategy</h4>
             <div className="space-y-2 text-sm">
@@ -710,13 +792,15 @@ export default function Retirement() {
       {/* ── Results ───────────────────────────────────────────── */}
       {summary ? (
         <Card>
-          <h3 className="mb-4 text-lg font-semibold">💰 Estimated Monthly Income at Retirement</h3>
+          <h3 className="mb-4 text-lg font-semibold">
+            💰 {summary.includeSpouse ? 'Combined ' : ''}Estimated Monthly Income at Retirement
+          </h3>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div className="space-y-1.5 text-sm">
               {guaranteedMonthly ? (
                 <>
                   <div className="flex justify-between">
-                    <span className="text-slate-400">From portfolio</span>
+                    <span className="text-slate-400">Portfolio withdrawal</span>
                     <span className="text-slate-100">{formatCurrency(guaranteedMonthly.portfolio)}/mo</span>
                   </div>
                   {guaranteedMonthly.ss > 0 ? (
@@ -725,16 +809,37 @@ export default function Retirement() {
                       <span className="text-slate-100">{formatCurrency(guaranteedMonthly.ss)}/mo</span>
                     </div>
                   ) : null}
+                  {guaranteedMonthly.spouseSS > 0 ? (
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">
+                        {firstSpouse?.name || 'Spouse'} Social Security
+                        {summary.spouseSSAge ? ` (from ${summary.spouseSSAge})` : ''}
+                      </span>
+                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.spouseSS)}/mo</span>
+                    </div>
+                  ) : null}
                   {guaranteedMonthly.pension > 0 ? (
                     <div className="flex justify-between">
                       <span className="text-slate-400">Pension</span>
                       <span className="text-slate-100">{formatCurrency(guaranteedMonthly.pension)}/mo</span>
                     </div>
                   ) : null}
+                  {guaranteedMonthly.spousePension > 0 ? (
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">{firstSpouse?.name || 'Spouse'} Pension</span>
+                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.spousePension)}/mo</span>
+                    </div>
+                  ) : null}
                   {guaranteedMonthly.rental > 0 ? (
                     <div className="flex justify-between">
                       <span className="text-slate-400">Rental income</span>
                       <span className="text-slate-100">{formatCurrency(guaranteedMonthly.rental)}/mo</span>
+                    </div>
+                  ) : null}
+                  {guaranteedMonthly.otherAsset > 0 ? (
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Business/other income</span>
+                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.otherAsset)}/mo</span>
                     </div>
                   ) : null}
                   {guaranteedMonthly.other > 0 ? (

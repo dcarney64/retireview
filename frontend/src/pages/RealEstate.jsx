@@ -59,6 +59,9 @@ const EMPTY_FORM = {
   mortgage_rate: '',
   mortgage_maturity_date: '',
   rental_income: '',
+  ownership_pct: '100',
+  commission_rate: '6',
+  sale_costs: '',
   notes: '',
 };
 
@@ -78,6 +81,9 @@ function PropertyModal({ property, onClose, onSaved }) {
           mortgage_rate: property.mortgage_rate != null ? String(Number(property.mortgage_rate)) : '',
           mortgage_maturity_date: property.mortgage_maturity_date ? String(property.mortgage_maturity_date).slice(0, 10) : '',
           rental_income: property.rental_income != null ? String(Number(property.rental_income)) : '',
+          ownership_pct: property.ownership_pct != null ? String(Number(property.ownership_pct)) : '100',
+          commission_rate: property.commission_rate != null ? String(Number(property.commission_rate)) : '6',
+          sale_costs: property.sale_costs != null ? String(Number(property.sale_costs)) : '',
           notes: property.notes || '',
         }
       : EMPTY_FORM
@@ -104,6 +110,9 @@ function PropertyModal({ property, onClose, onSaved }) {
         mortgage_rate: form.mortgage_rate === '' ? null : Number(form.mortgage_rate),
         mortgage_maturity_date: form.mortgage_maturity_date || null,
         rental_income: Number(form.rental_income) || 0,
+        ownership_pct: Number(form.ownership_pct) || 100,
+        commission_rate: Number(form.commission_rate) || 6,
+        sale_costs: Number(form.sale_costs) || 0,
         notes: form.notes,
       };
       if (property) {
@@ -174,6 +183,23 @@ function PropertyModal({ property, onClose, onSaved }) {
           </Field>
           <Field id="prop-rental" label="Rental income ($/month, optional)">
             <Input id="prop-rental" type="number" min="0" step="100" value={form.rental_income} onChange={set('rental_income')} />
+          </Field>
+          <Field
+            id="prop-ownership"
+            label="Ownership % (optional)"
+            hint="Enter your ownership share. All values can be entered as full property amounts — we'll calculate your share."
+          >
+            <Input id="prop-ownership" type="number" min="1" max="100" step="0.1" value={form.ownership_pct} onChange={set('ownership_pct')} />
+          </Field>
+          <Field id="prop-commission" label="Commission rate % (when selling)">
+            <Input id="prop-commission" type="number" min="0" max="15" step="0.1" value={form.commission_rate} onChange={set('commission_rate')} />
+          </Field>
+          <Field
+            id="prop-sale-costs"
+            label="Est. repairs & closing costs ($)"
+            hint="Fixed costs when selling: repairs, staging, closing costs, etc."
+          >
+            <Input id="prop-sale-costs" type="number" min="0" step="500" value={form.sale_costs} onChange={set('sale_costs')} placeholder="0" />
           </Field>
           <div className="md:col-span-2">
             <Field id="prop-notes" label="Notes (optional)">
@@ -355,6 +381,14 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
     ? (Number(property.rental_income) || 0) / 12
     : Number(property.rental_income) || 0;
 
+  const ownershipPct = Number(property.ownership_pct ?? 100);
+  const isPartialOwnership = ownershipPct < 100;
+  const yourValue = property.yourValue ?? value;
+  const yourMortgage = property.yourMortgage ?? mortgage;
+  const yourEquity = property.yourEquity ?? (value - mortgage);
+  const commissionAmount = property.commissionAmount ?? 0;
+  const netEquityIfSold = property.netEquityIfSold ?? yourEquity;
+
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -368,6 +402,9 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
               {property.is_primary_residence ? (
                 <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-300">Primary</span>
               ) : null}
+              {isPartialOwnership ? (
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">{ownershipPct}% owned</span>
+              ) : null}
             </div>
             {property.address ? <div className="text-sm text-slate-400">{property.address}</div> : null}
           </div>
@@ -376,10 +413,22 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-x-8 gap-y-4 md:grid-cols-3">
-        <Stat label="Estimated value" value={formatCurrency(value)} />
-        <Stat label="Mortgage balance" value={formatCurrency(mortgage)}
-          sub={property.mortgage_rate != null ? `${Number(property.mortgage_rate)}% rate${property.mortgage_payment > 0 ? ` · ${formatCurrency(property.mortgage_payment)}/mo` : ''}` : null} />
-        <Stat label="Equity" value={formatCurrency(property.equity)} />
+        {isPartialOwnership ? (
+          <>
+            <Stat label="Full property value" value={formatCurrency(value)} />
+            <Stat label={`Your share (${ownershipPct}%)`} value={formatCurrency(yourValue)} />
+            <Stat label="Full mortgage" value={formatCurrency(mortgage)} />
+            <Stat label="Your mortgage share" value={formatCurrency(yourMortgage)} />
+            <Stat label="Gross equity (your share)" value={formatCurrency(yourEquity)} subClass="text-emerald-400" />
+          </>
+        ) : (
+          <>
+            <Stat label="Estimated value" value={formatCurrency(value)} />
+            <Stat label="Mortgage balance" value={formatCurrency(mortgage)}
+              sub={property.mortgage_rate != null ? `${Number(property.mortgage_rate)}% rate${property.mortgage_payment > 0 ? ` · ${formatCurrency(property.mortgage_payment)}/mo` : ''}` : null} />
+            <Stat label="Equity" value={formatCurrency(yourEquity)} />
+          </>
+        )}
         {purchase != null ? (
           <Stat label="Purchase price" value={formatCurrency(purchase)}
             sub={property.purchase_date ? formatDate(property.purchase_date) : null} />
@@ -388,7 +437,7 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
           <Stat label="Rental income" value={`${formatCurrency(rentalMonthly)}/mo`}
             sub={`${formatCurrency(property.annual_rental_income)} / year`} />
         ) : null}
-        {gain != null ? (
+        {gain != null && !isPartialOwnership ? (
           <Stat
             label="Unrealized gain"
             value={`${gain >= 0 ? '+' : '−'}${formatCurrency(Math.abs(gain))}`}
@@ -397,6 +446,35 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
           />
         ) : null}
       </div>
+
+      {/* If-sold breakdown (always shown when there are selling costs or partial ownership) */}
+      {(commissionAmount > 0 || Number(property.sale_costs) > 0 || isPartialOwnership) ? (
+        <div className="mt-4 rounded-md border border-slate-800 bg-slate-800/30 p-3 text-sm">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">If Sold</div>
+          <div className="space-y-1">
+            <div className="flex justify-between">
+              <span className="text-slate-400">Gross equity (your share)</span>
+              <span className="text-slate-200">{formatCurrency(yourEquity)}</span>
+            </div>
+            {commissionAmount > 0 ? (
+              <div className="flex justify-between">
+                <span className="text-slate-400">Commission ({Number(property.commission_rate ?? 6)}%)</span>
+                <span className="text-red-400">−{formatCurrency(commissionAmount)}</span>
+              </div>
+            ) : null}
+            {Number(property.sale_costs) > 0 ? (
+              <div className="flex justify-between">
+                <span className="text-slate-400">Repairs / closing costs</span>
+                <span className="text-red-400">−{formatCurrency(Number(property.sale_costs))}</span>
+              </div>
+            ) : null}
+            <div className="flex justify-between border-t border-slate-700 pt-1 font-medium">
+              <span className="text-slate-300">Net equity if sold</span>
+              <span className="text-emerald-400">{formatCurrency(netEquityIfSold)}</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {property.notes ? <p className="mt-4 text-sm text-slate-500">{property.notes}</p> : null}
 
@@ -454,9 +532,9 @@ export default function RealEstate() {
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <Card className="p-4">
-          <div className="text-sm text-slate-400">Total Value</div>
+          <div className="text-sm text-slate-400">Your Share (Value)</div>
           <div className="mt-1 text-2xl font-semibold text-slate-100">
-            {formatCurrency(totals.total_real_estate_value || 0)}
+            {formatCurrency(totals.total_your_value ?? totals.total_real_estate_value ?? 0)}
           </div>
         </Card>
         <Card className="p-4">
@@ -466,10 +544,15 @@ export default function RealEstate() {
           </div>
         </Card>
         <Card className="p-4">
-          <div className="text-sm text-slate-400">Total Equity</div>
+          <div className="text-sm text-slate-400">Your Equity</div>
           <div className="mt-1 text-2xl font-semibold text-emerald-400">
             {formatCurrency(totals.total_equity || 0)}
           </div>
+          {totals.total_net_equity_if_sold != null && totals.total_net_equity_if_sold !== totals.total_equity ? (
+            <div className="mt-0.5 text-xs text-slate-500">
+              Net if sold: {formatCurrency(totals.total_net_equity_if_sold)}
+            </div>
+          ) : null}
         </Card>
         <Card className="p-4">
           <div className="text-sm text-slate-400">Monthly Rental Income</div>

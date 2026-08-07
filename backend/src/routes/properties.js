@@ -11,7 +11,8 @@ const PROPERTY_COLUMNS = `
     id, name, property_type, address, estimated_value, purchase_price,
     purchase_date, mortgage_balance, mortgage_payment, mortgage_rate,
     mortgage_maturity_date, rental_income, rental_frequency, notes,
-    is_primary_residence, archived_at, created_at, updated_at`;
+    is_primary_residence, ownership_pct, commission_rate, sale_costs,
+    archived_at, created_at, updated_at`;
 
 function annualRentalIncome(property) {
     const rental = Number(property.rental_income) || 0;
@@ -19,9 +20,28 @@ function annualRentalIncome(property) {
 }
 
 function withComputed(row) {
+    const ownershipPct = Number(row.ownership_pct ?? 100);
+    const ownershipFrac = ownershipPct / 100;
+    const fullValue = Number(row.estimated_value);
+    const fullMortgage = Number(row.mortgage_balance) || 0;
+    const yourValue = fullValue * ownershipFrac;
+    const yourMortgage = fullMortgage * ownershipFrac;
+    const yourEquity = yourValue - yourMortgage;
+    const commissionRate = Number(row.commission_rate ?? 6);
+    const commissionAmount = yourValue * (commissionRate / 100);
+    const saleCosts = Number(row.sale_costs) || 0;
+    const netEquityIfSold = yourEquity - commissionAmount - saleCosts;
+
     return {
         ...row,
-        equity: Number(row.estimated_value) - (Number(row.mortgage_balance) || 0),
+        // legacy key — kept so existing callers don't break
+        equity: yourEquity,
+        // ownership-aware keys
+        yourValue,
+        yourMortgage,
+        yourEquity,
+        commissionAmount,
+        netEquityIfSold,
         annual_rental_income: annualRentalIncome(row),
     };
 }
@@ -74,8 +94,10 @@ router.get('/', requireAuth, async (req, res) => {
             properties,
             totals: {
                 total_real_estate_value: active.reduce((s, p) => s + Number(p.estimated_value), 0),
+                total_your_value: active.reduce((s, p) => s + p.yourValue, 0),
                 total_mortgage_balance: active.reduce((s, p) => s + (Number(p.mortgage_balance) || 0), 0),
-                total_equity: active.reduce((s, p) => s + p.equity, 0),
+                total_equity: active.reduce((s, p) => s + p.yourEquity, 0),
+                total_net_equity_if_sold: active.reduce((s, p) => s + p.netEquityIfSold, 0),
                 total_monthly_rental_income: active.reduce((s, p) => s + p.annual_rental_income / 12, 0),
                 total_annual_rental_income: active.reduce((s, p) => s + p.annual_rental_income, 0),
             },
@@ -98,8 +120,8 @@ router.post('/', requireAuth, async (req, res) => {
                  (user_id, name, property_type, address, estimated_value, purchase_price,
                   purchase_date, mortgage_balance, mortgage_payment, mortgage_rate,
                   mortgage_maturity_date, rental_income, rental_frequency, notes,
-                  is_primary_residence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                  is_primary_residence, ownership_pct, commission_rate, sale_costs)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
              RETURNING ${PROPERTY_COLUMNS}`,
             [
                 req.user.id,
@@ -117,6 +139,9 @@ router.post('/', requireAuth, async (req, res) => {
                 body.rental_frequency === 'annual' ? 'annual' : 'monthly',
                 body.notes?.trim() || null,
                 body.is_primary_residence === true,
+                body.ownership_pct != null && body.ownership_pct !== '' ? Number(body.ownership_pct) : 100,
+                body.commission_rate != null && body.commission_rate !== '' ? Number(body.commission_rate) : 6,
+                Number(body.sale_costs) || 0,
             ]
         );
 
@@ -162,6 +187,9 @@ router.put('/:id', requireAuth, async (req, res) => {
                  rental_frequency = COALESCE($19, rental_frequency),
                  notes = CASE WHEN $20 THEN $21 ELSE notes END,
                  is_primary_residence = COALESCE($22, is_primary_residence),
+                 ownership_pct = COALESCE($23, ownership_pct),
+                 commission_rate = COALESCE($24, commission_rate),
+                 sale_costs = COALESCE($25, sale_costs),
                  updated_at = NOW()
              WHERE id = $1 AND user_id = $2
              RETURNING ${PROPERTY_COLUMNS}`,
@@ -188,6 +216,9 @@ router.put('/:id', requireAuth, async (req, res) => {
                 body.notes !== undefined,
                 body.notes !== undefined ? (body.notes?.trim() || null) : null,
                 typeof body.is_primary_residence === 'boolean' ? body.is_primary_residence : null,
+                body.ownership_pct !== undefined ? Number(body.ownership_pct) : null,
+                body.commission_rate !== undefined ? Number(body.commission_rate) : null,
+                body.sale_costs !== undefined ? Number(body.sale_costs) || 0 : null,
             ]
         );
 

@@ -14,7 +14,10 @@ const SCENARIO_COLUMNS = `
     social_security_monthly, social_security_start_age, pension_monthly,
     rental_income_monthly, other_income_monthly,
     withdrawal_rate, withdrawal_type, fixed_withdrawal_amount,
-    annual_spending_goal, created_at, updated_at`;
+    annual_spending_goal,
+    include_spouse, spouse_ss_monthly, spouse_ss_age,
+    spouse_pension_monthly, spouse_retirement_age,
+    created_at, updated_at`;
 
 // Numeric fields accepted on create/update, mapped 1:1 to columns
 const NUMERIC_FIELDS = [
@@ -24,6 +27,7 @@ const NUMERIC_FIELDS = [
     'social_security_monthly', 'social_security_start_age', 'pension_monthly',
     'rental_income_monthly', 'other_income_monthly',
     'withdrawal_rate', 'fixed_withdrawal_amount', 'annual_spending_goal',
+    'spouse_ss_monthly', 'spouse_ss_age', 'spouse_pension_monthly', 'spouse_retirement_age',
 ];
 
 async function liquidPortfolioTotal(userId) {
@@ -39,7 +43,9 @@ async function liquidPortfolioTotal(userId) {
 // Year-by-year projection. Pre-retirement the portfolio compounds untouched;
 // post-retirement it grows then pays out the chosen withdrawal each year.
 // Exported for the email digest service.
-export function computeProjection(scenario, currentYear) {
+//
+// otherAssets: optional array of other_assets rows for business income / sale proceeds
+export function computeProjection(scenario, currentYear, otherAssets = []) {
     const currentAge = Number(scenario.current_age) || 62;
     const retirementAge = Number(scenario.retirement_age) || 67;
     const lifeExpectancy = Number(scenario.life_expectancy) || 90;
@@ -57,10 +63,23 @@ export function computeProjection(scenario, currentYear) {
     const fixedWithdrawal = Number(scenario.fixed_withdrawal_amount) || 0;
     const spendingGoal = Number(scenario.annual_spending_goal) || 0;
 
+    // Spouse/partner income fields
+    const includeSpouse = scenario.include_spouse === true;
+    const spouseSS = includeSpouse ? (Number(scenario.spouse_ss_monthly) || 0) : 0;
+    const spouseSSAge = includeSpouse ? (Number(scenario.spouse_ss_age) || retirementAge) : retirementAge;
+    const spousePension = includeSpouse ? (Number(scenario.spouse_pension_monthly) || 0) : 0;
+    const spouseRetirementAge = includeSpouse ? (Number(scenario.spouse_retirement_age) || retirementAge) : retirementAge;
+
     let portfolio = Number(scenario.starting_portfolio) || 0;
     if (scenario.include_real_estate) {
         portfolio += Number(scenario.real_estate_value) || 0;
     }
+
+    // Index other assets for fast lookup
+    // incomeAssets: generate income up to (expected_sale_age OR retirement_age)
+    // saleAssets: keyed by expected_sale_age
+    const incomeAssets = otherAssets.filter((a) => a.generates_income && Number(a.monthly_income) > 0);
+    const saleAssets = otherAssets.filter((a) => a.expected_sale_age != null);
 
     const yearlyData = [];
     let portfolioAtRetirement = null;
@@ -73,29 +92,58 @@ export function computeProjection(scenario, currentYear) {
         const yearsFromNow = age - currentAge;
         const retired = age >= retirementAge;
 
+        // Business/other asset income — included as long as asset not yet sold
+        const otherAssetAnnualIncome = incomeAssets.reduce((s, a) => {
+            const stopAge = a.expected_sale_age != null
+                ? Math.min(Number(a.expected_sale_age), retirementAge)
+                : retirementAge;
+            return age < stopAge ? s + Number(a.monthly_income) * 12 : s;
+        }, 0);
+
+        // Sale proceeds arrive in the year age === expected_sale_age
+        const saleProceedsThisYear = saleAssets.reduce((s, a) => {
+            if (Number(a.expected_sale_age) === age) {
+                const saleVal = a.expected_sale_value != null
+                    ? Number(a.expected_sale_value)
+                    : Number(a.estimated_value);
+                return s + saleVal * (Number(a.ownership_pct ?? 100) / 100);
+            }
+            return s;
+        }, 0);
+
         const socialSecurity = age >= ssStartAge ? ssMonthly * 12 : 0;
         const pensionIncome = retired ? pensionMonthly * 12 : 0;
+        const spouseSSIncome = (includeSpouse && age >= spouseSSAge) ? spouseSS * 12 : 0;
+        const spousePensionIncome = (includeSpouse && age >= spouseRetirementAge) ? spousePension * 12 : 0;
         const rentalIncome = rentalMonthly * 12;
         const otherIncome = retired ? otherMonthly * 12 : 0;
-        const guaranteedIncome = socialSecurity + pensionIncome + rentalIncome + otherIncome;
+        const guaranteedIncome = socialSecurity + pensionIncome + spouseSSIncome + spousePensionIncome
+            + rentalIncome + otherIncome + (retired ? 0 : otherAssetAnnualIncome);
+        const guaranteedIncomeRetired = socialSecurity + pensionIncome + spouseSSIncome + spousePensionIncome
+            + rentalIncome + otherIncome + (retired ? otherAssetAnnualIncome : 0);
         const inflationAdjustedSpending = spendingGoal * (1 + inflation) ** yearsFromNow;
 
         let withdrawal = 0;
         let growth;
 
         if (!retired) {
+            // Add sale proceeds to portfolio even pre-retirement
+            portfolio += saleProceedsThisYear;
             growth = portfolio * preReturn;
             portfolio += growth;
         } else {
             if (portfolioAtRetirement === null) {
                 portfolioAtRetirement = portfolio;
             }
+            // Add sale proceeds before computing withdrawal
+            portfolio += saleProceedsThisYear;
+
             if (withdrawalType === 'percentage') {
                 withdrawal = portfolio * withdrawalRate;
             } else if (withdrawalType === 'fixed') {
                 withdrawal = fixedWithdrawal;
             } else {
-                withdrawal = Math.max(0, inflationAdjustedSpending - guaranteedIncome);
+                withdrawal = Math.max(0, inflationAdjustedSpending - guaranteedIncomeRetired);
             }
             growth = portfolio * postReturn;
             portfolio = portfolio + growth - withdrawal;
@@ -108,7 +156,7 @@ export function computeProjection(scenario, currentYear) {
             }
         }
 
-        const totalIncome = withdrawal + guaranteedIncome;
+        const totalIncome = withdrawal + (retired ? guaranteedIncomeRetired : 0);
         if (retired) {
             totalLifetimeIncome += totalIncome;
             if (monthlyIncomeAtRetirement === null) {
@@ -120,12 +168,16 @@ export function computeProjection(scenario, currentYear) {
             year,
             age,
             portfolioValue: Math.round(portfolio),
-            portfolioGrowth: Math.round(growth),
+            portfolioGrowth: Math.round(growth || 0),
             withdrawalAmount: Math.round(withdrawal),
             socialSecurity: Math.round(socialSecurity),
             pensionIncome: Math.round(pensionIncome),
+            spouseSocialSecurity: Math.round(spouseSSIncome),
+            spousePension: Math.round(spousePensionIncome),
             rentalIncome: Math.round(rentalIncome),
             otherIncome: Math.round(otherIncome),
+            otherAssetIncome: Math.round(retired ? otherAssetAnnualIncome : otherAssetAnnualIncome),
+            saleProceeds: Math.round(saleProceedsThisYear),
             totalIncome: Math.round(totalIncome),
             monthlyIncome: Math.round(totalIncome / 12),
             inflationAdjustedSpending: Math.round(inflationAdjustedSpending),
@@ -142,6 +194,10 @@ export function computeProjection(scenario, currentYear) {
             totalLifetimeIncome: Math.round(totalLifetimeIncome),
             portfolioRunsOut,
             yearsOfRetirement: Math.max(0, lifeExpectancy - retirementAge),
+            includeSpouse,
+            spouseSS,
+            spouseSSAge,
+            spousePension,
         },
     };
 }
@@ -444,6 +500,7 @@ function buildScenarioValues(body) {
     if (body.name !== undefined) values.name = String(body.name).trim();
     if (body.color !== undefined) values.color = String(body.color).trim() || '#6366f1';
     if (body.include_real_estate !== undefined) values.include_real_estate = body.include_real_estate === true;
+    if (body.include_spouse !== undefined) values.include_spouse = body.include_spouse === true;
     if (body.withdrawal_type !== undefined) {
         if (!WITHDRAWAL_TYPES.includes(body.withdrawal_type)) {
             throw Object.assign(
@@ -558,24 +615,36 @@ router.post('/:id/activate', requireAuth, async (req, res) => {
 
 router.get('/:id/projection', requireAuth, async (req, res) => {
     try {
-        const result = await query(
-            `SELECT ${SCENARIO_COLUMNS}
-             FROM retirement_scenarios
-             WHERE id = $1 AND user_id = $2`,
-            [req.params.id, req.user.id]
-        );
-        if (!result.rowCount) {
+        const [scenarioResult, otherAssetsResult] = await Promise.all([
+            query(
+                `SELECT ${SCENARIO_COLUMNS}
+                 FROM retirement_scenarios
+                 WHERE id = $1 AND user_id = $2`,
+                [req.params.id, req.user.id]
+            ),
+            query(
+                `SELECT id, name, asset_type, estimated_value, ownership_pct,
+                        generates_income, monthly_income, income_description,
+                        expected_sale_age, expected_sale_value
+                 FROM other_assets
+                 WHERE user_id = $1 AND archived_at IS NULL`,
+                [req.user.id]
+            ),
+        ]);
+
+        if (!scenarioResult.rowCount) {
             return res.status(404).json({ error: 'Scenario not found' });
         }
 
-        const scenario = { ...result.rows[0] };
+        const scenario = { ...scenarioResult.rows[0] };
         // Fall back to live account totals when the scenario has no explicit portfolio
         if (scenario.starting_portfolio === null) {
             scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id);
         }
 
-        const projection = computeProjection(scenario, new Date().getFullYear());
-        return res.json({ scenario: result.rows[0], ...projection });
+        const otherAssets = otherAssetsResult.rows;
+        const projection = computeProjection(scenario, new Date().getFullYear(), otherAssets);
+        return res.json({ scenario: scenarioResult.rows[0], ...projection });
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Failed to compute projection' });
     }
