@@ -29,9 +29,9 @@ function validateAccountInput({ name, type, balance }, { partial = false } = {})
 router.get('/', requireAuth, async (req, res) => {
     try {
         const result = await query(
-            `SELECT id, name, type, balance, notes, source, institution,
+            `SELECT id, name, display_name, type, balance, notes, source, institution,
                     last_synced_at, include_in_tracking, fidelity_account_number,
-                    created_at, updated_at
+                    archived_at, created_at, updated_at
              FROM accounts
              WHERE user_id = $1
              ORDER BY type, name`,
@@ -58,7 +58,7 @@ router.post('/', requireAuth, async (req, res) => {
         const created = await query(
             `INSERT INTO accounts (user_id, name, type, balance, notes, source, external_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
-             RETURNING id, name, type, balance, notes, source, external_id,
+             RETURNING id, name, display_name, type, balance, notes, source, external_id,
                        include_in_tracking, fidelity_account_number, created_at, updated_at`,
             [
                 req.user.id,
@@ -78,7 +78,7 @@ router.post('/', requireAuth, async (req, res) => {
 
 router.put('/:id', requireAuth, async (req, res) => {
     try {
-        const { name, type, balance, notes, include_in_tracking } = req.body || {};
+        const { name, type, balance, notes, include_in_tracking, display_name, archived } = req.body || {};
 
         const invalid = validateAccountInput({ name, type, balance }, { partial: true });
         if (invalid) {
@@ -90,6 +90,11 @@ router.put('/:id', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'include_in_tracking must be a boolean' });
         }
 
+        // archived must be boolean if provided
+        if (archived !== undefined && typeof archived !== 'boolean') {
+            return res.status(400).json({ error: 'archived must be a boolean' });
+        }
+
         const updated = await query(
             `UPDATE accounts
              SET
@@ -98,12 +103,24 @@ router.put('/:id', requireAuth, async (req, res) => {
                  -- Synced balances belong to SnapTrade; manual edits can't override them
                  balance = CASE WHEN source = 'snaptrade' THEN balance ELSE COALESCE($5, balance) END,
                  notes = CASE WHEN $6 THEN $7 ELSE notes END,
-                 include_in_tracking = CASE WHEN $8 THEN $9 ELSE include_in_tracking END,
+                 -- Archiving always forces include_in_tracking off; otherwise honour explicit param
+                 include_in_tracking = CASE
+                     WHEN $12 AND $13 THEN false
+                     WHEN $8            THEN $9
+                     ELSE include_in_tracking
+                 END,
+                 -- display_name can be explicitly set to NULL to clear an alias
+                 display_name = CASE WHEN $10 THEN $11 ELSE display_name END,
+                 -- archived: true → set archived_at = NOW(); false → clear it
+                 archived_at = CASE
+                     WHEN $12 THEN (CASE WHEN $13 THEN NOW() ELSE NULL END)
+                     ELSE archived_at
+                 END,
                  updated_at = now()
              WHERE id = $1 AND user_id = $2
-             RETURNING id, name, type, balance, notes, source, institution,
+             RETURNING id, name, display_name, type, balance, notes, source, institution,
                        last_synced_at, include_in_tracking, fidelity_account_number,
-                       created_at, updated_at`,
+                       archived_at, created_at, updated_at`,
             [
                 req.params.id,
                 req.user.id,
@@ -114,6 +131,10 @@ router.put('/:id', requireAuth, async (req, res) => {
                 notes !== undefined ? (notes?.trim() || null) : null,
                 include_in_tracking !== undefined,
                 include_in_tracking ?? null,
+                display_name !== undefined,
+                display_name !== undefined ? (display_name?.trim() || null) : null,
+                archived !== undefined,
+                archived === true,
             ]
         );
 

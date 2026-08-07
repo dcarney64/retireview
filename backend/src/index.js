@@ -24,7 +24,10 @@ import authRoutes from './routes/auth.js';
 import connectionsRoutes from './routes/connections.js';
 import importRoutes from './routes/import.js';
 import goalsRoutes from './routes/goals.js';
+import netWorthRoutes from './routes/netWorth.js';
 import performanceRoutes from './routes/performance.js';
+import propertiesRoutes from './routes/properties.js';
+import scenariosRoutes from './routes/scenarios.js';
 import settingsRoutes from './routes/settings.js';
 import snapshotsRoutes from './routes/snapshots.js';
 import snaptradeRoutes from './routes/snaptrade.js';
@@ -100,6 +103,9 @@ app.use('/api/goals', goalsRoutes);
 app.use('/api/snaptrade', snaptradeRoutes);
 app.use('/api/transfers', transfersRoutes);
 app.use('/api/performance', performanceRoutes);
+app.use('/api/properties', propertiesRoutes);
+app.use('/api/net-worth', netWorthRoutes);
+app.use('/api/scenarios', scenariosRoutes);
 
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

@@ -6,6 +6,7 @@ import apiClient from '../api/client';
 import ConfirmDialog from '../components/shared/ConfirmDialog';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
+import { Input } from '../components/ui/input';
 import { formatCurrency } from '../lib/accountTypes';
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
@@ -611,6 +612,566 @@ function ComposerHistorySection() {
   );
 }
 
+// ─── Manual balance history import ───────────────────────────────────────────
+
+const MONTH_NAMES = [
+  'january','february','march','april','may','june',
+  'july','august','september','october','november','december',
+];
+const SHORT_MONTHS = [
+  'jan','feb','mar','apr','may','jun',
+  'jul','aug','sep','oct','nov','dec',
+];
+
+/** Parse a user-typed date string into { year, month } (1-indexed month), or null. */
+function parseMonthYear(str) {
+  if (!str) return null;
+  str = str.trim();
+
+  // YYYY-MM or YYYY-MM-DD
+  const ym  = str.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+  if (ym) {
+    const year = parseInt(ym[1], 10), month = parseInt(ym[2], 10);
+    if (month >= 1 && month <= 12) return { year, month };
+  }
+
+  // "Jan 2024" or "January 2024"
+  const mmmYY = str.match(/^([a-z]+)\s+(\d{4})$/i);
+  if (mmmYY) {
+    const name = mmmYY[1].toLowerCase();
+    const year = parseInt(mmmYY[2], 10);
+    const mi   = MONTH_NAMES.indexOf(name);
+    const si   = SHORT_MONTHS.indexOf(name);
+    const month = mi !== -1 ? mi + 1 : si !== -1 ? si + 1 : 0;
+    if (month) return { year, month };
+  }
+
+  // MM/YYYY or M/YYYY
+  const mmYY = str.match(/^(\d{1,2})\/(\d{4})$/);
+  if (mmYY) {
+    const month = parseInt(mmYY[1], 10), year = parseInt(mmYY[2], 10);
+    if (month >= 1 && month <= 12) return { year, month };
+  }
+
+  return null;
+}
+
+/** Return the last calendar day of a month as "YYYY-MM-DD". */
+function lastDay(year, month) {
+  // new Date(year, month, 0) → last day of `month` (1-indexed months here)
+  const d  = new Date(year, month, 0);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
+}
+
+function fmtMonthYear(isoDate) {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+/** Parse a raw text block (date, balance per line) into rows + errors. */
+function parseCSVText(text) {
+  const lines  = text.split('\n');
+  const rows   = [];
+  const errors = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = raw.trim();
+    if (!line) continue;
+
+    // Split on first comma (balance may contain commas like "12,500")
+    const commaIdx = line.indexOf(',');
+    if (commaIdx === -1) {
+      errors.push(`Row ${i + 1}: expected "date, balance" — no comma found`);
+      continue;
+    }
+
+    const dateStr = line.slice(0, commaIdx).trim();
+    const valStr  = line.slice(commaIdx + 1).trim().replace(/[$,\s]/g, '');
+
+    const parsed = parseMonthYear(dateStr);
+    if (!parsed) {
+      errors.push(`Row ${i + 1}: "${dateStr}" — unrecognized date format`);
+      continue;
+    }
+
+    const value = parseFloat(valStr);
+    if (!Number.isFinite(value)) {
+      errors.push(`Row ${i + 1}: "${valStr}" — not a valid number`);
+      continue;
+    }
+
+    const isoDate  = lastDay(parsed.year, parsed.month);
+    rows.push({
+      isoDate,
+      displayDate: fmtMonthYear(isoDate),
+      value,
+      rawInput: line,
+    });
+  }
+
+  // Deduplicate — last row wins for a given month
+  const seen = new Map();
+  rows.forEach((r) => seen.set(r.isoDate, r));
+  return { rows: [...seen.values()].sort((a, b) => a.isoDate.localeCompare(b.isoDate)), errors };
+}
+
+const EMPTY_DEPOSIT = { date: '', amount: '', transferType: 'deposit', notes: '' };
+
+function ManualHistoryImport() {
+  const queryClient = useQueryClient();
+  const navigate    = useNavigate();
+  const fileInputRef = useRef(null);
+
+  // Accounts — manual only, not archived
+  const accountsQuery = useQuery({
+    queryKey: ['accounts'],
+    queryFn:  async () => (await apiClient.get('/accounts')).data,
+    staleTime: 60_000,
+  });
+  const manualAccounts = (accountsQuery.data || []).filter(
+    (a) => a.source === 'manual' && !a.archived_at
+  );
+
+  const [accountId,    setAccountId]    = useState('');
+  const [pastedText,   setPastedText]   = useState('');
+  const [parsedRows,   setParsedRows]   = useState(null);   // null = not parsed yet
+  const [parseErrors,  setParseErrors]  = useState([]);
+  const [existingDates, setExistingDates] = useState(new Set());
+  const [importResult, setImportResult] = useState(null);
+
+  // Deposit form state
+  const [deposits,    setDeposits]    = useState([]);  // saved deposits shown in list
+  const [depositForm, setDepositForm] = useState(null); // null = hidden
+  const [depositErr,  setDepositErr]  = useState('');
+
+  // Reset when account changes
+  function handleAccountChange(id) {
+    setAccountId(id);
+    setParsedRows(null);
+    setParseErrors([]);
+    setExistingDates(new Set());
+    setImportResult(null);
+    setDeposits([]);
+    setDepositForm(null);
+  }
+
+  async function fetchExistingDates(acctId) {
+    try {
+      const res = await apiClient.get(`/import/manual-history/dates?accountId=${acctId}`);
+      setExistingDates(new Set(res.data.dates.map((d) => String(d).slice(0, 10))));
+    } catch {
+      setExistingDates(new Set());
+    }
+  }
+
+  function handleParse() {
+    if (!pastedText.trim()) return;
+    const { rows, errors } = parseCSVText(pastedText);
+    setParsedRows(rows);
+    setParseErrors(errors);
+    if (rows.length > 0 && accountId) fetchExistingDates(accountId);
+  }
+
+  function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target.result;
+      setPastedText(text);
+      const { rows, errors } = parseCSVText(text);
+      setParsedRows(rows);
+      setParseErrors(errors);
+      if (rows.length > 0 && accountId) fetchExistingDates(accountId);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  const importMutation = useMutation({
+    mutationFn: async () => apiClient.post('/import/manual-history', {
+      accountId,
+      rows: parsedRows.map((r) => ({ date: r.isoDate, value: r.value })),
+    }),
+    onSuccess: (res) => {
+      setImportResult(res.data);
+      queryClient.invalidateQueries({ queryKey: ['snapshots'] });
+      queryClient.invalidateQueries({ queryKey: ['performance'] });
+    },
+  });
+
+  const depositMutation = useMutation({
+    mutationFn: async (form) => apiClient.post('/transfers', {
+      accountId,
+      amount:        Number(form.amount),
+      transferType:  form.transferType,
+      transferredAt: form.date,
+      notes:         form.notes,
+    }),
+    onSuccess: (_, form) => {
+      setDeposits((prev) => [...prev, form]);
+      setDepositForm(null);
+      setDepositErr('');
+      queryClient.invalidateQueries({ queryKey: ['performance'] });
+    },
+    onError: (err) => setDepositErr(err?.response?.data?.error || 'Failed to save'),
+  });
+
+  function startOver() {
+    setAccountId('');
+    setPastedText('');
+    setParsedRows(null);
+    setParseErrors([]);
+    setExistingDates(new Set());
+    setImportResult(null);
+    setDeposits([]);
+    setDepositForm(null);
+    setDepositErr('');
+  }
+
+  const newCount    = parsedRows ? parsedRows.filter((r) => !existingDates.has(r.isoDate)).length : 0;
+  const updateCount = parsedRows ? parsedRows.filter((r) => existingDates.has(r.isoDate)).length  : 0;
+
+  return (
+    <section>
+      <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-5 space-y-5">
+        {/* Header */}
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 text-2xl">📋</span>
+          <div className="flex-1">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-slate-200">Manual Account History</h3>
+              {(parsedRows !== null || importResult) && (
+                <button type="button" onClick={startOver} className="text-xs text-slate-500 hover:text-slate-300">
+                  Start over
+                </button>
+              )}
+            </div>
+            <p className="mt-0.5 text-sm text-slate-400">
+              Import monthly balance history for manually-tracked accounts. Each row
+              becomes a snapshot at the end of that month.
+            </p>
+          </div>
+        </div>
+
+        {/* ── Step 1: Account selector ─── */}
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-slate-300">Account</label>
+          {manualAccounts.length === 0 && !accountsQuery.isLoading ? (
+            <p className="text-sm text-slate-400">
+              No manual accounts found.{' '}
+              <a href="/accounts" className="text-sky-400 hover:underline">Create a manual account</a> first,
+              then return here to import its history.
+            </p>
+          ) : (
+            <select
+              className="w-full max-w-xs rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              value={accountId}
+              onChange={(e) => handleAccountChange(e.target.value)}
+              disabled={Boolean(importResult)}
+            >
+              <option value="">— Select an account —</option>
+              {manualAccounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.display_name || a.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* ── Step 2: CSV input (only if account selected and not yet done) ─── */}
+        {accountId && !importResult && (
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-slate-300">
+              Paste or upload monthly data
+            </label>
+            <p className="text-xs text-slate-500">
+              One row per month: <code className="text-slate-400">2024-01, 12500</code>&nbsp;
+              Accepts: YYYY-MM · YYYY-MM-DD · Jan 2024 · January 2024 · MM/YYYY
+            </p>
+
+            {/* Two-column input: paste + upload */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {/* Option A: paste */}
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-slate-400">Option A — Paste CSV</p>
+                <textarea
+                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-none"
+                  rows={8}
+                  placeholder={"2024-01, 12500\n2024-02, 13200\n2024-03, 11800\n..."}
+                  value={pastedText}
+                  onChange={(e) => { setPastedText(e.target.value); setParsedRows(null); }}
+                />
+                <Button
+                  className="w-full bg-slate-700 hover:bg-slate-600 text-sm"
+                  onClick={handleParse}
+                  disabled={!pastedText.trim()}
+                >
+                  Parse &amp; Preview
+                </Button>
+              </div>
+
+              {/* Option B: file upload */}
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-slate-400">Option B — Upload file</p>
+                <div
+                  className="flex h-[calc(8rem+2px)] cursor-pointer flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed border-slate-700 text-center hover:border-slate-500 hover:bg-slate-800/30 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <span className="text-2xl text-slate-500">📂</span>
+                  <p className="text-xs text-slate-400">Click to browse or drag &amp; drop</p>
+                  <p className="text-xs text-slate-600">.csv or .txt accepted</p>
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,.txt,text/csv,text/plain"
+                  className="hidden"
+                  onChange={handleFile}
+                />
+                <p className="text-xs text-slate-600 text-center">File is parsed locally — never uploaded</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Step 3: Preview table ─── */}
+        {parsedRows !== null && !importResult && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-slate-300">
+                Preview — {parsedRows.length} row{parsedRows.length !== 1 ? 's' : ''}
+                {newCount > 0 && <span className="ml-2 text-emerald-400">{newCount} new</span>}
+                {updateCount > 0 && <span className="ml-2 text-amber-400">{updateCount} update</span>}
+              </p>
+            </div>
+
+            {/* Parse errors */}
+            {parseErrors.length > 0 && (
+              <div className="space-y-0.5">
+                {parseErrors.map((e, i) => (
+                  <p key={i} className="text-xs text-red-400">❌ {e}</p>
+                ))}
+              </div>
+            )}
+
+            {parsedRows.length > 0 ? (
+              <>
+                <div className="overflow-x-auto rounded-lg border border-slate-700">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-800/80">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-slate-400">Date</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-slate-400">Balance</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-slate-400">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {parsedRows.map((row) => {
+                        const isUpdate = existingDates.has(row.isoDate);
+                        return (
+                          <tr key={row.isoDate} className="hover:bg-slate-800/30">
+                            <td className="px-3 py-2 text-slate-200">{row.displayDate}</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-mono text-slate-200">
+                              {formatCurrency(row.value)}
+                            </td>
+                            <td className="px-3 py-2">
+                              {isUpdate ? (
+                                <span className="text-xs text-amber-400">⚠ Update</span>
+                              ) : (
+                                <span className="text-xs text-emerald-400">✓ New</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {importMutation.isError && (
+                  <p className="text-sm text-red-400">
+                    {importMutation.error?.response?.data?.error || 'Import failed — please try again.'}
+                  </p>
+                )}
+
+                <Button
+                  onClick={() => importMutation.mutate()}
+                  disabled={importMutation.isPending || parsedRows.length === 0}
+                >
+                  {importMutation.isPending
+                    ? 'Importing…'
+                    : `Import ${parsedRows.length} row${parsedRows.length !== 1 ? 's' : ''}`}
+                </Button>
+              </>
+            ) : (
+              parseErrors.length > 0 ? (
+                <p className="text-sm text-slate-400">Fix the errors above and try again.</p>
+              ) : (
+                <p className="text-sm text-slate-400">No valid rows found — check your data format.</p>
+              )
+            )}
+          </div>
+        )}
+
+        {/* ── Step 4: Result ─── */}
+        {importResult && (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-emerald-700/50 bg-emerald-900/15 px-4 py-4 space-y-2">
+              <p className="font-medium text-emerald-300">
+                ✅ Imported {importResult.rowsImported} month{importResult.rowsImported !== 1 ? 's' : ''} of history
+                for "{importResult.accountName}"
+              </p>
+              {importResult.dateRange?.earliest && (
+                <p className="text-sm text-slate-400">
+                  {fmtMonthYear(importResult.dateRange.earliest)}
+                  {importResult.dateRange.latest !== importResult.dateRange.earliest
+                    ? ` → ${fmtMonthYear(importResult.dateRange.latest)}`
+                    : ''}
+                </p>
+              )}
+              <div className="flex flex-wrap gap-x-5 gap-y-0.5 text-xs text-slate-500">
+                {importResult.peakBalance != null && (
+                  <span>Peak: {formatCurrency(importResult.peakBalance)}
+                    {importResult.peakDate ? ` (${fmtMonthYear(importResult.peakDate)})` : ''}
+                  </span>
+                )}
+                {importResult.finalBalance != null && (
+                  <span>Final: {formatCurrency(importResult.finalBalance)}</span>
+                )}
+              </div>
+            </div>
+
+            {/* Deposit entry section */}
+            <div className="rounded-lg border border-slate-700 bg-slate-900/40 px-4 py-4 space-y-3">
+              <div>
+                <p className="text-sm font-medium text-slate-300">
+                  Did you make any deposits or withdrawals during this period?
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Log them so RetireView can compute accurate time-weighted returns (TWR).
+                </p>
+              </div>
+
+              {/* Saved deposits list */}
+              {deposits.length > 0 && (
+                <ul className="space-y-1">
+                  {deposits.map((d, i) => (
+                    <li key={i} className="text-xs text-slate-400 flex items-center gap-2">
+                      <span className={d.transferType === 'deposit' || d.transferType === 'transfer_in' ? 'text-emerald-400' : 'text-amber-400'}>
+                        {d.transferType === 'deposit' ? '▲ Deposit' : d.transferType === 'withdrawal' ? '▼ Withdrawal' : d.transferType === 'transfer_in' ? '▲ Transfer in' : '▼ Transfer out'}
+                      </span>
+                      <span>{formatCurrency(Math.abs(Number(d.amount)))}</span>
+                      <span className="text-slate-600">·</span>
+                      <span>{d.date}</span>
+                      {d.notes && <span className="text-slate-600">· {d.notes}</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {/* Deposit form */}
+              {depositForm !== null ? (
+                <form
+                  className="space-y-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setDepositErr('');
+                    depositMutation.mutate(depositForm);
+                  }}
+                >
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="space-y-1">
+                      <label className="block text-xs text-slate-400">Date</label>
+                      <Input
+                        type="date"
+                        value={depositForm.date}
+                        onChange={(e) => setDepositForm((f) => ({ ...f, date: e.target.value }))}
+                        className="text-xs py-1.5"
+                        required
+                        autoFocus
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-slate-400">Amount ($)</label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={depositForm.amount}
+                        onChange={(e) => setDepositForm((f) => ({ ...f, amount: e.target.value }))}
+                        placeholder="0.00"
+                        className="text-xs py-1.5"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-slate-400">Type</label>
+                      <select
+                        className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-100"
+                        value={depositForm.transferType}
+                        onChange={(e) => setDepositForm((f) => ({ ...f, transferType: e.target.value }))}
+                      >
+                        <option value="deposit">Deposit</option>
+                        <option value="withdrawal">Withdrawal</option>
+                        <option value="transfer_in">Transfer In</option>
+                        <option value="transfer_out">Transfer Out</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs text-slate-400">Note</label>
+                      <Input
+                        value={depositForm.notes}
+                        onChange={(e) => setDepositForm((f) => ({ ...f, notes: e.target.value }))}
+                        placeholder="Optional"
+                        className="text-xs py-1.5"
+                      />
+                    </div>
+                  </div>
+                  {depositErr && <p className="text-xs text-red-400">{depositErr}</p>}
+                  <div className="flex gap-2">
+                    <Button type="submit" className="text-sm" disabled={depositMutation.isPending}>
+                      {depositMutation.isPending ? 'Saving…' : 'Save transfer'}
+                    </Button>
+                    <Button
+                      type="button"
+                      className="bg-slate-700 hover:bg-slate-600 text-sm"
+                      onClick={() => { setDepositForm(null); setDepositErr(''); }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  className="text-sm text-sky-400 hover:text-sky-300"
+                  onClick={() => setDepositForm({ ...EMPTY_DEPOSIT })}
+                >
+                  + Add deposit / withdrawal
+                </button>
+              )}
+            </div>
+
+            {/* Navigation */}
+            <div className="flex flex-wrap gap-3">
+              <Button onClick={() => navigate('/performance')} className="bg-slate-700 hover:bg-slate-600">
+                View in Performance →
+              </Button>
+              <Button onClick={startOver} className="bg-slate-700 hover:bg-slate-600">
+                Import Another Account
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 // ─── Import history ───────────────────────────────────────────────────────────
 
 function ImportHistory() {
@@ -929,6 +1490,9 @@ export default function Import() {
 
       {/* Composer NAV history */}
       <ComposerHistorySection />
+
+      {/* Manual account history import */}
+      <ManualHistoryImport />
 
       {/* Drop zone */}
       <div className="space-y-3">

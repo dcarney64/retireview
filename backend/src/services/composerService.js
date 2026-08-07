@@ -364,10 +364,111 @@ export async function backfillPortfolioHistory(userId) {
         }
     }
 
+    // After filling history, detect likely deposit events from large single-day
+    // NAV jumps and auto-insert them into account_transfers so TWR calculations
+    // can correctly subtract them.
+    const detectionResult = await detectAndInsertComposerDeposits(userId);
+    console.log(`[composer] Deposit detection: ${detectionResult.insertedCount} new deposits inserted`);
+
     return {
         accountsProcessed: accountSummaries.filter((a) => a.pointCount > 0).length,
         rowsInserted:      totalRowsInserted,
         accounts:          accountSummaries,
         dateRange:         { earliest: globalEarliest, latest: globalLatest },
+        depositsDetected:  detectionResult,
+    };
+}
+
+// ─── Composer deposit detection ───────────────────────────────────────────────
+
+// Scans portfolio_history for day-over-day NAV jumps that are likely cash
+// deposits rather than market gains and inserts them into account_transfers
+// with source='composer_detected' so TWR calculations can subtract them.
+//
+// Detection criteria (all must be true):
+//   • Day-over-day increase > $500 absolute
+//   • Day-over-day increase > 3% of prior value
+//   • Date gap between consecutive rows ≤ 5 days (guards against long data gaps
+//     that could produce false positives over weekends/holidays)
+//
+// Safe to re-run: skips any date that already has an account_transfers row for
+// the same account, whether manual or previously auto-detected.
+//
+// Returns { detectedCount, insertedCount, deposits: [{date, accountId, amount, pctChange}] }
+export async function detectAndInsertComposerDeposits(userId) {
+    // Window function to compare each day to the prior data point.
+    const detected = await query(
+        `WITH ranked AS (
+             SELECT
+                 history_date,
+                 account_id,
+                 portfolio_value,
+                 LAG(history_date)    OVER (PARTITION BY account_id ORDER BY history_date) AS prev_date,
+                 LAG(portfolio_value) OVER (PARTITION BY account_id ORDER BY history_date) AS prev_value
+             FROM portfolio_history
+             WHERE user_id = $1
+         )
+         SELECT
+             account_id::text,
+             history_date::text                                           AS date,
+             (portfolio_value - prev_value)::float                       AS change_amount,
+             CASE WHEN prev_value > 0
+                  THEN ((portfolio_value - prev_value) / prev_value)::float
+                  ELSE 0
+             END                                                         AS pct_change,
+             (history_date - prev_date)::int                             AS day_gap
+         FROM ranked
+         WHERE prev_value IS NOT NULL
+           AND portfolio_value > prev_value
+           AND portfolio_value - prev_value > 500
+           AND CASE WHEN prev_value > 0
+                   THEN (portfolio_value - prev_value) / prev_value
+                   ELSE 0
+               END > 0.03
+           AND (history_date - prev_date) <= 5
+         ORDER BY history_date`,
+        [userId]
+    );
+
+    let insertedCount = 0;
+    const deposits    = [];
+
+    for (const dep of detected.rows) {
+        // Skip if any transfer row already exists for this account+date to
+        // prevent double-counting whether entered manually or detected before.
+        const existing = await query(
+            `SELECT 1 FROM account_transfers
+             WHERE account_id = $1 AND transferred_at = $2
+             LIMIT 1`,
+            [dep.account_id, dep.date]
+        );
+        if (existing.rows.length > 0) continue;
+
+        const pctStr = (dep.pct_change * 100).toFixed(1);
+        await query(
+            `INSERT INTO account_transfers
+               (user_id, account_id, amount, transfer_type, transferred_at, notes, source)
+             VALUES ($1, $2, $3, 'deposit', $4, $5, 'composer_detected')`,
+            [
+                userId,
+                dep.account_id,
+                dep.change_amount,
+                dep.date,
+                `Composer auto-detected deposit (+${pctStr}% single-day jump)`,
+            ]
+        );
+        insertedCount++;
+        deposits.push({
+            date:      dep.date,
+            accountId: dep.account_id,
+            amount:    dep.change_amount,
+            pctChange: dep.pct_change,
+        });
+    }
+
+    return {
+        detectedCount: detected.rows.length,
+        insertedCount,
+        deposits,
     };
 }

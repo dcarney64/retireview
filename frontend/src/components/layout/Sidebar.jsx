@@ -1,13 +1,24 @@
+import {
+  Building2,
+  LayoutDashboard,
+  LineChart,
+  Target,
+  TrendingUp,
+  Upload,
+  Wallet,
+} from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 import { useAuthStore } from '../../store/authStore';
 
 const mainItems = [
-  { label: 'Dashboard',   path: '/'            },
-  { label: 'Performance', path: '/performance' },
-  { label: 'Accounts',    path: '/accounts'    },
-  { label: 'Import Data', path: '/import'      },
-  { label: 'Goal',        path: '/goal'        },
+  { label: 'Dashboard',   path: '/',            icon: LayoutDashboard },
+  { label: 'Net Worth',   path: '/net-worth',   icon: TrendingUp      },
+  { label: 'Performance', path: '/performance', icon: LineChart       },
+  { label: 'Real Estate', path: '/real-estate', icon: Building2       },
+  { label: 'Accounts',    path: '/accounts',    icon: Wallet          },
+  { label: 'Import Data', path: '/import',      icon: Upload          },
+  { label: 'Retirement',  path: '/retirement',  icon: Target          },
 ];
 
 const adminItems = [
@@ -29,14 +40,16 @@ export default function Sidebar() {
 
   const renderLink = (item) => {
     const active = isActivePath(location.pathname, item.path);
+    const Icon = item.icon;
     return (
       <Link
         key={item.path}
         to={item.path}
-        className={`block rounded-md px-3 py-2 text-sm ${
+        className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm ${
           active ? 'bg-sky-500/20 text-sky-300' : 'text-slate-300 hover:bg-slate-800'
         }`}
       >
+        {Icon ? <Icon size={16} className="shrink-0" /> : null}
         {item.label}
       </Link>
     );

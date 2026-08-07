@@ -355,3 +355,124 @@ CREATE INDEX IF NOT EXISTS idx_portfolio_history_account
   ON portfolio_history(account_id);
 CREATE INDEX IF NOT EXISTS idx_portfolio_history_user_date
   ON portfolio_history(user_id, history_date);
+
+-- ============================================================
+-- ACCOUNT ALIASES
+-- display_name: user-chosen friendly name shown in charts and
+--   reports. Falls back to the system-assigned name column when null.
+-- name stays as the canonical broker-assigned identifier so
+--   sync services can always match on it.
+-- ============================================================
+ALTER TABLE accounts
+  ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+-- ============================================================
+-- ACCOUNT ARCHIVE STATUS
+-- archived_at: NULL = active account; timestamp = closed/archived.
+-- Archived accounts are excluded from net worth but preserved
+-- for historical charts and performance data.
+-- ============================================================
+ALTER TABLE accounts
+  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ DEFAULT NULL;
+
+-- ============================================================
+-- PROPERTIES
+-- Real estate holdings tracked separately from liquid accounts.
+-- estimated_value is updated in place; property_values keeps the
+-- valuation history for charting.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS properties (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  property_type   TEXT NOT NULL DEFAULT 'residential'
+                  CHECK (property_type IN ('residential', 'commercial', 'land', 'other')),
+  address         TEXT,
+  estimated_value NUMERIC(15,2) NOT NULL DEFAULT 0,
+  purchase_price  NUMERIC(15,2),
+  purchase_date   DATE,
+  mortgage_balance NUMERIC(15,2) DEFAULT 0,
+  mortgage_payment NUMERIC(15,2) DEFAULT 0,
+  mortgage_rate    NUMERIC(5,2),
+  mortgage_maturity_date DATE,
+  rental_income   NUMERIC(15,2) DEFAULT 0,
+  rental_frequency TEXT DEFAULT 'monthly',
+  notes           TEXT,
+  is_primary_residence BOOLEAN DEFAULT false,
+  archived_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_properties_user ON properties(user_id);
+
+CREATE TABLE IF NOT EXISTS property_values (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  property_id     UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+  estimated_value NUMERIC(15,2) NOT NULL,
+  recorded_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+  source          TEXT DEFAULT 'manual',
+  notes           TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(property_id, recorded_date)
+);
+CREATE INDEX IF NOT EXISTS idx_property_values_property ON property_values(property_id);
+
+-- ============================================================
+-- RETIREMENT SCENARIOS
+-- Named what-if projections for the Retirement page. One row per
+-- scenario; is_active marks the one the Dashboard reads from.
+-- Projection math lives in routes/scenarios.js.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS retirement_scenarios (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  is_active       BOOLEAN DEFAULT false,
+  color           TEXT DEFAULT '#6366f1',
+
+  -- Inputs
+  current_age     INTEGER,
+  retirement_age  INTEGER DEFAULT 67,
+  life_expectancy INTEGER DEFAULT 90,
+
+  -- Assets at retirement
+  starting_portfolio NUMERIC(15,2),
+  include_real_estate BOOLEAN DEFAULT false,
+  real_estate_value   NUMERIC(15,2) DEFAULT 0,
+
+  -- Return assumptions
+  pre_retirement_return  NUMERIC(5,2) DEFAULT 10.0,
+  post_retirement_return NUMERIC(5,2) DEFAULT 7.0,
+  inflation_rate         NUMERIC(5,2) DEFAULT 3.0,
+
+  -- Income sources
+  social_security_monthly NUMERIC(15,2) DEFAULT 0,
+  social_security_start_age INTEGER DEFAULT 67,
+  pension_monthly         NUMERIC(15,2) DEFAULT 0,
+  rental_income_monthly   NUMERIC(15,2) DEFAULT 0,
+  other_income_monthly    NUMERIC(15,2) DEFAULT 0,
+
+  -- Withdrawal strategy
+  -- 'percentage' = withdraw X% per year
+  -- 'fixed'      = withdraw fixed $ amount per year
+  -- 'income_gap' = withdraw only what's needed above guaranteed income
+  withdrawal_rate         NUMERIC(5,2) DEFAULT 4.0,
+  withdrawal_type         TEXT DEFAULT 'percentage'
+                          CHECK (withdrawal_type IN ('percentage', 'fixed', 'income_gap')),
+  fixed_withdrawal_amount NUMERIC(15,2),
+
+  -- Spending
+  annual_spending_goal    NUMERIC(15,2),
+
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_retirement_scenarios_user ON retirement_scenarios(user_id);
+
+-- Seed a default scenario for users that have none yet
+INSERT INTO retirement_scenarios (user_id, name, is_active)
+SELECT u.id, 'Moderate', true
+FROM users u
+WHERE NOT EXISTS (
+  SELECT 1 FROM retirement_scenarios rs WHERE rs.user_id = u.id
+);

@@ -10,28 +10,30 @@ import { Input } from '../components/ui/input';
 import { ACCOUNT_TYPES, formatCurrency, typeColor } from '../lib/accountTypes';
 import { useAuthStore } from '../store/authStore';
 
-// ─── Inline toggle switch ────────────────────────────────────────────────────
+// ─── 3-state status control ───────────────────────────────────────────────────
 
-function TrackingToggle({ checked, onChange, disabled }) {
+/**
+ * Dropdown with three states: Tracked / Excluded / Archive.
+ * Replaces the old boolean toggle. Archiving is a one-step destructive
+ * action that always forces include_in_tracking = false.
+ */
+function StatusDropdown({ account, onStatusChange, disabled }) {
+  const isTracked  = account.include_in_tracking !== false;
+  const current    = isTracked ? 'tracked' : 'excluded';
+
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={checked ? 'Included in tracking — click to exclude' : 'Excluded from tracking — click to include'}
-      onClick={(e) => { e.stopPropagation(); onChange(); }}
+    <select
+      aria-label="Account status"
+      value={current}
       disabled={disabled}
-      title={checked ? 'Included in net worth' : 'Excluded from net worth'}
-      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${
-        checked ? 'bg-emerald-500' : 'bg-slate-600'
-      }`}
+      onChange={(e) => onStatusChange(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50 cursor-pointer"
     >
-      <span
-        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-5' : 'translate-x-1'
-        }`}
-      />
-    </button>
+      <option value="tracked">● Tracked</option>
+      <option value="excluded">○ Excluded</option>
+      <option value="archived">⊗ Archive…</option>
+    </select>
   );
 }
 
@@ -503,7 +505,7 @@ function TransferModal({ accounts, onClose, onSaved }) {
               onChange={set('accountId')}
               required
             >
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.display_name || a.name}</option>)}
             </select>
           </div>
           <div className="space-y-1">
@@ -545,32 +547,57 @@ function TransferModal({ accounts, onClose, onSaved }) {
 
 // ─── Account modal (create / edit) ───────────────────────────────────────────
 
-const EMPTY_FORM = { name: '', type: 'brokerage', balance: '', notes: '' };
+const EMPTY_FORM = { name: '', display_name: '', type: 'brokerage', balance: '', notes: '' };
 
-function AccountModal({ account, onClose, onSaved }) {
-  const isEdit   = Boolean(account?.id);
-  const isSynced = account?.source === 'snaptrade';
+function AccountModal({ account, onClose, onSaved, onArchived }) {
+  const isEdit      = Boolean(account?.id);
+  const isArchived  = Boolean(account?.archived_at);
+  // Synced = balance/name managed by an external service; display_name is the
+  // only user-editable label for these accounts.
+  const isSynced    = account?.source === 'snaptrade' || account?.source === 'composer';
   const [form, setForm] = useState(
     isEdit
-      ? { name: account.name, type: account.type, balance: String(account.balance), notes: account.notes || '' }
+      ? {
+          name:         account.name,
+          display_name: account.display_name || '',
+          type:         account.type,
+          balance:      String(account.balance),
+          notes:        account.notes || '',
+        }
       : EMPTY_FORM
   );
-  const [error, setError] = useState('');
+  const [error, setError]               = useState('');
+  const [confirmArchive, setConfirmArchive] = useState(false);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const payload = {
-        name: form.name,
-        type: form.type,
-        notes: form.notes,
-        ...(isSynced ? {} : { balance: Number(form.balance) || 0 }),
-      };
-      return isEdit
-        ? apiClient.put(`/accounts/${account.id}`, payload)
-        : apiClient.post('/accounts', payload);
+      if (isEdit) {
+        const payload = {
+          type:         form.type,
+          notes:        form.notes,
+          display_name: form.display_name?.trim() || null,
+        };
+        if (!isSynced) {
+          payload.name    = form.name;
+          payload.balance = Number(form.balance) || 0;
+        }
+        return apiClient.put(`/accounts/${account.id}`, payload);
+      }
+      return apiClient.post('/accounts', {
+        name:    form.name,
+        type:    form.type,
+        balance: Number(form.balance) || 0,
+        notes:   form.notes,
+      });
     },
     onSuccess: onSaved,
     onError: (err) => setError(err?.response?.data?.error || 'Failed to save account'),
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: async (archive) => apiClient.put(`/accounts/${account.id}`, { archived: archive }),
+    onSuccess: () => { onArchived?.(); onClose(); },
+    onError: (err) => setError(err?.response?.data?.error || 'Failed to update account'),
   });
 
   const set = (key) => (e) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
@@ -581,12 +608,49 @@ function AccountModal({ account, onClose, onSaved }) {
         className="mx-4 w-full max-w-md rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="mb-4 text-lg font-semibold text-white">{isEdit ? 'Edit Account' : 'Add Account'}</h3>
+        <h3 className="mb-4 text-lg font-semibold text-white">
+          {isEdit ? (isArchived ? 'Archived Account' : 'Edit Account') : 'Add Account'}
+        </h3>
         <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); setError(''); saveMutation.mutate(); }}>
-          <div className="space-y-1">
-            <label className="block text-sm text-slate-400" htmlFor="account-name">Name</label>
-            <Input id="account-name" value={form.name} onChange={set('name')} placeholder="e.g. Fidelity brokerage" required autoFocus />
-          </div>
+
+          {isEdit && isSynced ? (
+            <>
+              <div className="space-y-1">
+                <label className="block text-sm text-slate-400">Account name (from broker)</label>
+                <div className="rounded-md border border-slate-800 bg-slate-800 px-3 py-2 text-sm text-slate-400 font-mono truncate">
+                  {account.name}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="block text-sm text-slate-400" htmlFor="account-display-name">
+                  Display name <span className="text-slate-500">(optional alias)</span>
+                </label>
+                <Input
+                  id="account-display-name"
+                  value={form.display_name}
+                  onChange={set('display_name')}
+                  placeholder="e.g. Composer Cash, My Roth IRA"
+                  autoFocus
+                />
+                <p className="text-xs text-slate-500">
+                  How this account appears in charts and reports. Leave blank to use the broker name above.
+                </p>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-1">
+              <label className="block text-sm text-slate-400" htmlFor="account-name">Name</label>
+              <Input
+                id="account-name"
+                value={form.name}
+                onChange={set('name')}
+                placeholder="e.g. Fidelity brokerage"
+                required
+                autoFocus
+              />
+            </div>
+          )}
+
           <div className="space-y-1">
             <label className="block text-sm text-slate-400" htmlFor="account-type">Type</label>
             <select
@@ -598,33 +662,92 @@ function AccountModal({ account, onClose, onSaved }) {
               {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </div>
-          <div className="space-y-1">
-            <label className="block text-sm text-slate-400" htmlFor="account-balance">Balance ($)</label>
-            <Input
-              id="account-balance"
-              type="number"
-              step="0.01"
-              value={form.balance}
-              onChange={set('balance')}
-              placeholder="0.00"
-              required={!isSynced}
-              disabled={isSynced}
-              className={isSynced ? 'opacity-60' : ''}
-            />
-            {isSynced ? <p className="text-xs text-slate-500">Balance is synced from SnapTrade and can't be edited.</p> : null}
-          </div>
+
+          {!isSynced && (
+            <div className="space-y-1">
+              <label className="block text-sm text-slate-400" htmlFor="account-balance">Balance ($)</label>
+              <Input
+                id="account-balance"
+                type="number"
+                step="0.01"
+                value={form.balance}
+                onChange={set('balance')}
+                placeholder="0.00"
+                required
+              />
+            </div>
+          )}
+
           <div className="space-y-1">
             <label className="block text-sm text-slate-400" htmlFor="account-notes">Notes</label>
             <Input id="account-notes" value={form.notes} onChange={set('notes')} placeholder="Optional" />
           </div>
+
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" className="bg-slate-700 hover:bg-slate-600" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={saveMutation.isPending}>
+            <Button type="submit" disabled={saveMutation.isPending || archiveMutation.isPending}>
               {saveMutation.isPending ? 'Saving...' : 'Save'}
             </Button>
           </div>
         </form>
+
+        {/* ── Archive / Restore section ─── */}
+        {isEdit && (
+          <div className="mt-5 border-t border-slate-800 pt-4">
+            {isArchived ? (
+              <div className="space-y-2">
+                <p className="text-xs text-amber-400/80">
+                  This account is archived — it's hidden from active tracking but its historical data is preserved.
+                </p>
+                <button
+                  type="button"
+                  className="text-sm text-amber-400 hover:text-amber-300 underline"
+                  disabled={archiveMutation.isPending}
+                  onClick={() => archiveMutation.mutate(false)}
+                >
+                  {archiveMutation.isPending ? 'Restoring…' : 'Restore this account'}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {confirmArchive ? (
+                  <div className="rounded-md border border-orange-800/50 bg-orange-900/20 p-3 space-y-2">
+                    <p className="text-sm text-orange-300">
+                      Archive this account? It will be removed from active tracking and hidden from the accounts list.
+                      Historical data and performance charts are unaffected.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        className="bg-orange-800 hover:bg-orange-700 text-sm px-3 py-1.5"
+                        disabled={archiveMutation.isPending}
+                        onClick={() => archiveMutation.mutate(true)}
+                      >
+                        {archiveMutation.isPending ? 'Archiving…' : 'Yes, archive'}
+                      </Button>
+                      <Button
+                        type="button"
+                        className="bg-slate-700 hover:bg-slate-600 text-sm px-3 py-1.5"
+                        onClick={() => setConfirmArchive(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-sm text-slate-500 hover:text-orange-400 transition-colors"
+                    onClick={() => setConfirmArchive(true)}
+                  >
+                    Archive this account — keeps historical data but removes from active tracking
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -635,6 +758,7 @@ function AccountModal({ account, onClose, onSaved }) {
 export default function Accounts() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
+  const [activeTab, setActiveTab]       = useState('active');  // 'active' | 'archived'
   const [addOpen, setAddOpen]           = useState(false);
   const [modalAccount, setModalAccount] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -653,29 +777,49 @@ export default function Accounts() {
     },
   });
 
-  const toggleTrackingMutation = useMutation({
-    mutationFn: async ({ id, include }) =>
-      apiClient.put(`/accounts/${id}`, { include_in_tracking: include }),
+  const statusMutation = useMutation({
+    mutationFn: async ({ id, include_in_tracking, archived }) =>
+      apiClient.put(`/accounts/${id}`, { include_in_tracking, archived }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['accounts'] }),
   });
 
-  const accounts = accountsQuery.data || [];
+  const allAccounts   = accountsQuery.data || [];
+  const activeAccounts   = useMemo(() => allAccounts.filter((a) => !a.archived_at), [allAccounts]);
+  const archivedAccounts = useMemo(() => allAccounts.filter((a) => Boolean(a.archived_at)), [allAccounts]);
+
+  // Show only the tab's accounts in the group grid
+  const visibleAccounts = activeTab === 'active' ? activeAccounts : archivedAccounts;
 
   const groups = useMemo(
     () => ACCOUNT_TYPES
-      .map((t) => ({ ...t, accounts: accounts.filter((a) => a.type === t.value) }))
+      .map((t) => ({ ...t, accounts: visibleAccounts.filter((a) => a.type === t.value) }))
       .filter((g) => g.accounts.length > 0),
-    [accounts]
+    [visibleAccounts]
   );
 
   const trackedTotal = useMemo(
-    () => accounts.filter((a) => a.include_in_tracking !== false).reduce((sum, a) => sum + Number(a.balance), 0),
-    [accounts]
+    () => activeAccounts.filter((a) => a.include_in_tracking !== false).reduce((sum, a) => sum + Number(a.balance), 0),
+    [activeAccounts]
   );
-  const excludedCount = accounts.filter((a) => a.include_in_tracking === false).length;
+  const excludedCount = activeAccounts.filter((a) => a.include_in_tracking === false).length;
+
+  // Accounts eligible for transfers (active only)
+  const transferableAccounts = activeAccounts;
+
+  function handleStatusChange(account, newStatus) {
+    if (newStatus === 'archived') {
+      statusMutation.mutate({ id: account.id, archived: true });
+    } else {
+      statusMutation.mutate({
+        id: account.id,
+        include_in_tracking: newStatus === 'tracked',
+      });
+    }
+  }
 
   return (
     <div className="space-y-4">
+      {/* ── Page header ────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-semibold">Accounts</h2>
@@ -686,47 +830,88 @@ export default function Accounts() {
                 ({excludedCount} account{excludedCount === 1 ? '' : 's'} excluded from total)
               </span>
             ) : null}
+            {archivedAccounts.length > 0 ? (
+              <span className="ml-2 text-slate-500">
+                · {archivedAccounts.length} archived
+              </span>
+            ) : null}
           </p>
         </div>
         <div className="flex gap-2">
-          <Button className="bg-slate-700 hover:bg-slate-600" onClick={() => setTransferOpen(true)} disabled={accounts.length === 0}>
+          <Button className="bg-slate-700 hover:bg-slate-600" onClick={() => setTransferOpen(true)} disabled={transferableAccounts.length === 0}>
             Log Transfer
           </Button>
           <Button onClick={() => setAddOpen(true)}>Add Account</Button>
         </div>
       </div>
 
+      {/* ── Active / Archived tab toggle ───────────────────────────── */}
+      <div className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 p-1 w-fit">
+        {[
+          { id: 'active',   label: `Active${activeAccounts.length ? ` (${activeAccounts.length})` : ''}` },
+          { id: 'archived', label: `Archived${archivedAccounts.length ? ` (${archivedAccounts.length})` : ''}` },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+              activeTab === tab.id
+                ? 'bg-slate-700 text-slate-100 shadow'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {user?.role === 'admin' ? <SnapTradePanel /> : null}
 
+      {/* ── Account groups ─────────────────────────────────────────── */}
       {groups.length === 0 ? (
         <Card>
-          <p className="py-8 text-center text-sm text-slate-400">
-            No accounts yet. Add your brokerage, retirement, bank, and property accounts to start tracking.
-          </p>
+          {activeTab === 'active' ? (
+            <p className="py-8 text-center text-sm text-slate-400">
+              No accounts yet. Add your brokerage, retirement, bank, and property accounts to start tracking.
+            </p>
+          ) : (
+            <p className="py-8 text-center text-sm text-slate-400">
+              No archived accounts. Archive a closed account to preserve its history without cluttering your active list.
+            </p>
+          )}
         </Card>
       ) : (
         groups.map((group) => {
           const subtotal = group.accounts
-            .filter((a) => a.include_in_tracking !== false)
+            .filter((a) => a.include_in_tracking !== false && !a.archived_at)
             .reduce((sum, a) => sum + Number(a.balance), 0);
           return (
             <Card key={group.value}>
               <div className="mb-3 flex items-center gap-2">
                 <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: typeColor(group.value) }} />
                 <h3 className="font-semibold">{group.label}</h3>
-                <span className="ml-auto text-sm text-slate-400">{formatCurrency(subtotal)}</span>
+                {activeTab === 'active' && (
+                  <span className="ml-auto text-sm text-slate-400">{formatCurrency(subtotal)}</span>
+                )}
               </div>
               <div className="space-y-2 text-sm">
                 {group.accounts.map((account) => {
-                  const excluded = account.include_in_tracking === false;
+                  const isArchived = Boolean(account.archived_at);
+                  const excluded   = account.include_in_tracking === false && !isArchived;
+
                   return (
                     <div
                       key={account.id}
-                      className={`flex items-center gap-3 rounded-md border border-slate-800 px-3 py-2 transition-opacity ${excluded ? 'opacity-50' : ''}`}
+                      className={`flex items-center gap-3 rounded-md border border-slate-800 px-3 py-2 transition-opacity ${
+                        isArchived ? 'opacity-50' : excluded ? 'opacity-60' : ''
+                      }`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 font-medium text-slate-100">
-                          <span className="truncate">{account.name}</span>
+                          <span className="truncate">
+                            {account.display_name || account.name}
+                          </span>
                           {account.source === 'snaptrade' ? (
                             <span
                               className="shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-300"
@@ -735,29 +920,56 @@ export default function Accounts() {
                               Synced
                             </span>
                           ) : null}
-                          {excluded ? (
+                          {account.source === 'composer' ? (
+                            <span
+                              className="shrink-0 rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-300"
+                              title="Synced from Composer"
+                            >
+                              Composer
+                            </span>
+                          ) : null}
+                          {isArchived ? (
+                            <span className="shrink-0 rounded-full bg-orange-900/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-orange-400">
+                              Archived
+                            </span>
+                          ) : excluded ? (
                             <span className="shrink-0 rounded-full bg-slate-700/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-400">
                               Excluded
                             </span>
                           ) : null}
                         </div>
-                        {account.institution ? (
+                        {account.display_name ? (
+                          <div className="truncate text-xs text-slate-500" title={account.name}>{account.name}</div>
+                        ) : account.institution ? (
                           <div className="truncate text-xs text-slate-500">{account.institution}</div>
                         ) : account.notes ? (
                           <div className="truncate text-xs text-slate-500">{account.notes}</div>
                         ) : null}
+                        {isArchived && account.archived_at ? (
+                          <div className="text-xs text-slate-600">
+                            Archived {new Date(account.archived_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+                          </div>
+                        ) : null}
                       </div>
+
                       <span className="font-medium text-slate-100">{formatCurrency(account.balance)}</span>
 
-                      {/* Include/exclude toggle */}
-                      <TrackingToggle
-                        checked={account.include_in_tracking !== false}
-                        disabled={toggleTrackingMutation.isPending}
-                        onChange={() => toggleTrackingMutation.mutate({
-                          id: account.id,
-                          include: account.include_in_tracking === false,
-                        })}
-                      />
+                      {/* Status control: dropdown for active, restore button for archived */}
+                      {isArchived ? (
+                        <Button
+                          className="bg-amber-900/60 hover:bg-amber-800/80 px-3 py-1 text-xs text-amber-300"
+                          disabled={statusMutation.isPending}
+                          onClick={() => statusMutation.mutate({ id: account.id, archived: false })}
+                        >
+                          Restore
+                        </Button>
+                      ) : (
+                        <StatusDropdown
+                          account={account}
+                          disabled={statusMutation.isPending}
+                          onStatusChange={(s) => handleStatusChange(account, s)}
+                        />
+                      )}
 
                       <Button className="bg-slate-700 px-3 py-1 hover:bg-slate-600" onClick={() => setModalAccount(account)}>
                         Edit
@@ -789,12 +1001,16 @@ export default function Accounts() {
             setModalAccount(null);
             queryClient.invalidateQueries({ queryKey: ['accounts'] });
           }}
+          onArchived={() => {
+            setModalAccount(null);
+            queryClient.invalidateQueries({ queryKey: ['accounts'] });
+          }}
         />
       ) : null}
 
-      {transferOpen && accounts.length > 0 ? (
+      {transferOpen && transferableAccounts.length > 0 ? (
         <TransferModal
-          accounts={accounts}
+          accounts={transferableAccounts}
           onClose={() => setTransferOpen(false)}
           onSaved={() => {
             setTransferOpen(false);
@@ -809,8 +1025,8 @@ export default function Accounts() {
         title="Delete account"
         message={
           deleteTarget?.source === 'snaptrade'
-            ? `Delete "${deleteTarget?.name}"? It is synced from SnapTrade, so the next sync will re-create it unless you disconnect the brokerage first. Past snapshots that include it will lose its detail rows.`
-            : `Delete "${deleteTarget?.name}"? Its balance will no longer count toward your net worth. Past snapshots that include it will also lose its detail rows.`
+            ? `Delete "${deleteTarget?.display_name || deleteTarget?.name}"? It is synced from SnapTrade, so the next sync will re-create it unless you disconnect the brokerage first. Past snapshots that include it will lose its detail rows.`
+            : `Delete "${deleteTarget?.display_name || deleteTarget?.name}"? Its balance will no longer count toward your net worth. Past snapshots that include it will also lose its detail rows.`
         }
         confirmLabel="Delete"
         onConfirm={() => deleteMutation.mutate(deleteTarget.id)}

@@ -21,6 +21,7 @@ import { ACCOUNT_TYPES, formatCurrency, typeColor, typeLabel } from '../lib/acco
 
 const CARD_SURFACE = '#0f172a'; // slate-900 — segment gaps ring in the surface color
 const SERIES_BLUE = '#3987e5';
+const RE_GREEN = '#199e70'; // real estate slice — same validated step used on Net Worth page
 
 function formatDate(dateStr) {
   if (!dateStr) return '—';
@@ -47,24 +48,33 @@ function ChartTooltip({ active, payload, label, labelFormatter }) {
   );
 }
 
-function GoalProgress({ goal, total }) {
-  if (!goal) {
+function GoalProgress({ goal, scenarioTarget, scenarioName, total }) {
+  // Prefer the active retirement scenario's portfolio-at-retirement target;
+  // fall back to the legacy saved goal.
+  const target = scenarioTarget || (goal ? Number(goal.target_amount) : 0);
+
+  if (!target) {
     return (
       <p className="text-sm text-slate-400">
-        No goal set yet — <Link to="/goal" className="text-sky-400 hover:underline">use the calculator</Link> to set one.
+        No goal set yet — <Link to="/retirement" className="text-sky-400 hover:underline">build a retirement scenario</Link> to set one.
       </p>
     );
   }
 
-  const target = Number(goal.target_amount);
   const pct = target > 0 ? Math.min(100, (total / target) * 100) : 0;
 
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between text-sm">
         <span className="text-slate-400">
-          Goal: <span className="text-slate-200">{formatCurrency(target)}</span>
-          {goal.target_date ? <span> by {formatDate(goal.target_date)}</span> : null}
+          {scenarioTarget ? (
+            <>Portfolio at retirement ({scenarioName}): <span className="text-slate-200">{formatCurrency(target)}</span></>
+          ) : (
+            <>
+              Goal: <span className="text-slate-200">{formatCurrency(target)}</span>
+              {goal?.target_date ? <span> by {formatDate(goal.target_date)}</span> : null}
+            </>
+          )}
         </span>
         <span className="font-medium text-slate-100">{pct.toFixed(1)}%</span>
       </div>
@@ -90,6 +100,20 @@ export default function Dashboard() {
   const goalQuery = useQuery({
     queryKey: ['goal'],
     queryFn: async () => (await apiClient.get('/goals')).data,
+  });
+  const netWorthQuery = useQuery({
+    queryKey: ['net-worth'],
+    queryFn: async () => (await apiClient.get('/net-worth')).data,
+  });
+  const scenariosQuery = useQuery({
+    queryKey: ['scenarios'],
+    queryFn: async () => (await apiClient.get('/scenarios')).data,
+  });
+  const activeScenario = (scenariosQuery.data || []).find((s) => s.is_active) || null;
+  const projectionQuery = useQuery({
+    queryKey: ['projection', activeScenario?.id, activeScenario?.updated_at],
+    queryFn: async () => (await apiClient.get(`/scenarios/${activeScenario.id}/projection`)).data,
+    enabled: !!activeScenario,
   });
 
   const snapshotMutation = useMutation({
@@ -126,24 +150,45 @@ export default function Dashboard() {
     [snapshots]
   );
 
+  const netWorthData = netWorthQuery.data;
+  const reEquity = netWorthData?.realEstate?.totalEquity || 0;
+  const otherTotal = netWorthData?.other?.total || 0;
+  const totalNetWorth = netWorthData ? netWorthData.netWorth : total;
+
+  const monthlyIncome = projectionQuery.data?.summary?.monthlyIncomeAtRetirement || null;
+  const scenarioTarget = projectionQuery.data?.summary?.portfolioAtRetirement || null;
+
   const allocation = useMemo(() => {
     const sums = {};
     for (const account of trackedAccounts) {
       sums[account.type] = (sums[account.type] || 0) + Number(account.balance);
     }
     // Fixed type order so colors stay stable as accounts come and go
-    return ACCOUNT_TYPES
+    const slices = ACCOUNT_TYPES
       .filter((t) => sums[t.value] > 0)
       .map((t) => ({ name: t.label, type: t.value, value: sums[t.value], fill: t.color }));
-  }, [accounts]);
+    // Real estate equity from properties joins the account-type slices
+    if (reEquity > 0) {
+      slices.push({ name: 'Real estate (properties)', type: 'properties', value: reEquity, fill: RE_GREEN });
+    }
+    return slices;
+  }, [accounts, reEquity]);
+
+  const allocationTotal = total + (reEquity > 0 ? reEquity : 0);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <div className="text-sm text-slate-400">Net worth</div>
-          <div className="text-4xl font-semibold text-slate-100">{formatCurrency(total)}</div>
-          {excludedCount > 0 ? (
+          <div className="text-sm text-slate-400">Total net worth</div>
+          <div className="text-4xl font-semibold text-slate-100">{formatCurrency(totalNetWorth)}</div>
+          {netWorthData ? (
+            <p className="mt-1 text-xs text-slate-500">
+              {formatCurrency(netWorthData.liquid.total)} liquid + {formatCurrency(reEquity)} real estate equity
+              {otherTotal > 0 ? ` + ${formatCurrency(otherTotal)} other` : ''} ·{' '}
+              <Link to="/net-worth" className="underline hover:text-slate-300">breakdown</Link>
+            </p>
+          ) : excludedCount > 0 ? (
             <p className="mt-1 text-xs text-slate-500">
               {excludedCount} account{excludedCount === 1 ? '' : 's'} excluded from total ·{' '}
               <a href="/accounts" className="underline hover:text-slate-300">manage</a>
@@ -158,9 +203,45 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Quick stats */}
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+        <Card className="p-4">
+          <div className="text-sm text-slate-400">Liquid Net Worth</div>
+          <div className="mt-1 text-2xl font-semibold text-slate-100">{formatCurrency(total)}</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-sm text-slate-400">Real Estate</div>
+          <div className="mt-1 text-2xl font-semibold text-slate-100">
+            {formatCurrency(reEquity)} <span className="text-sm font-normal text-slate-500">equity</span>
+          </div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-sm text-slate-400">Total Net Worth</div>
+          <div className="mt-1 text-2xl font-semibold text-slate-100">{formatCurrency(totalNetWorth)}</div>
+        </Card>
+        <Card className="p-4">
+          <Link to="/retirement" className="block">
+            <div className="text-sm text-slate-400">Est. Retirement Income</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-100">
+              {monthlyIncome != null ? `${formatCurrency(monthlyIncome)}/mo` : '—'}
+            </div>
+            {activeScenario ? (
+              <div className="mt-0.5 text-xs text-slate-500">Based on {activeScenario.name} scenario</div>
+            ) : (
+              <div className="mt-0.5 text-xs text-sky-400">Set up a scenario →</div>
+            )}
+          </Link>
+        </Card>
+      </div>
+
       <Card>
         <h3 className="mb-3 text-lg font-semibold">Goal Progress</h3>
-        <GoalProgress goal={goal} total={total} />
+        <GoalProgress
+          goal={goal}
+          scenarioTarget={scenarioTarget}
+          scenarioName={activeScenario?.name}
+          total={total}
+        />
       </Card>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
@@ -246,17 +327,41 @@ export default function Dashboard() {
                   </PieChart>
                 </ResponsiveContainer>
               </div>
-              <ul className="mt-4 space-y-1.5 text-sm">
-                {allocation.map((entry) => (
-                  <li key={entry.type} className="flex items-center gap-2">
-                    <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: entry.fill }} />
-                    <span className="text-slate-300">{entry.name}</span>
-                    <span className="ml-auto font-medium text-slate-100">{formatCurrency(entry.value)}</span>
-                    <span className="w-12 text-right text-slate-400">
-                      {total > 0 ? `${((entry.value / total) * 100).toFixed(0)}%` : '—'}
-                    </span>
-                  </li>
-                ))}
+              <ul className="mt-4 space-y-2.5 text-sm">
+                {allocation.map((entry) => {
+                  // Per-account detail within this type (sorted by balance desc)
+                  const typeAccounts = trackedAccounts
+                    .filter((a) => a.type === entry.type)
+                    .sort((a, b) => Number(b.balance) - Number(a.balance));
+                  return (
+                    <li key={entry.type}>
+                      {/* Type-level summary row */}
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: entry.fill }} />
+                        <span className="text-slate-300 font-medium">{entry.name}</span>
+                        <span className="ml-auto font-medium text-slate-100">{formatCurrency(entry.value)}</span>
+                        <span className="w-12 text-right text-slate-400">
+                          {allocationTotal > 0 ? `${((entry.value / allocationTotal) * 100).toFixed(0)}%` : '—'}
+                        </span>
+                      </div>
+                      {/* Per-account names (uses display_name when set) */}
+                      {typeAccounts.length > 0 && (
+                        <ul className="mt-1 ml-5 space-y-0.5">
+                          {typeAccounts.map((acct) => (
+                            <li key={acct.id} className="flex items-center gap-1.5 text-xs">
+                              <span className="truncate flex-1 text-slate-500">
+                                {acct.display_name || acct.name}
+                              </span>
+                              <span className="shrink-0 font-mono text-slate-500">
+                                {formatCurrency(acct.balance)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </>
           )}

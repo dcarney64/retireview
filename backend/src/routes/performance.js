@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
 import { query } from '../db/client.js';
-import { backfillPortfolioHistory } from '../services/composerService.js';
+import { backfillPortfolioHistory, detectAndInsertComposerDeposits } from '../services/composerService.js';
 import { reconstructHistoryForUser } from '../services/historyReconstructService.js';
 
 const router = Router();
@@ -199,16 +199,24 @@ function computeWindowStats(allSeries, allTransfers) {
             : allTransfers;
 
         if (!wSeries.length) {
-            stats[windowId] = { simpleReturn: null, twr: null, snapshotCount: 0, startValue: null, endValue: null };
+            stats[windowId] = {
+                simpleReturn: null, twr: null, snapshotCount: 0,
+                startValue: null, endValue: null, netDeposited: 0, dollarGain: null,
+            };
             continue;
         }
 
-        const startValue = toNum(wSeries[0].total);
-        const endValue   = toNum(wSeries[wSeries.length - 1].total);
+        const startValue   = toNum(wSeries[0].total);
+        const endValue     = toNum(wSeries[wSeries.length - 1].total);
         const simpleReturn = startValue > 0 ? (endValue - startValue) / startValue : null;
-        const twr = computeTWR(wSeries, wTransfers);
+        const twr          = computeTWR(wSeries, wTransfers);
 
-        stats[windowId] = { simpleReturn, twr, snapshotCount: wSeries.length, startValue, endValue };
+        // Net cash deposited/withdrawn in the window (positive = net deposit).
+        const netDeposited = wTransfers.reduce((s, t) => s + toNum(t.amount), 0);
+        // Investment-only dollar gain: total change minus net new money added.
+        const dollarGain   = endValue - startValue - netDeposited;
+
+        stats[windowId] = { simpleReturn, twr, snapshotCount: wSeries.length, startValue, endValue, netDeposited, dollarGain };
     }
 
     return stats;
@@ -264,7 +272,7 @@ router.get('/', requireAuth, async (req, res) => {
                             t.transfer_type,
                             t.transferred_at::text AS transferred_at,
                             t.notes,
-                            a.name AS account_name,
+                            COALESCE(a.display_name, a.name) AS account_name,
                             a.type AS account_type
                      FROM account_transfers t
                      JOIN accounts a ON a.id = t.account_id
@@ -276,7 +284,8 @@ router.get('/', requireAuth, async (req, res) => {
                 query(
                     `SELECT ph.history_date::text AS date,
                             ph.account_id::text   AS account_id,
-                            a.name                AS account_name,
+                            COALESCE(a.display_name, a.name) AS account_name,
+                            a.display_name,
                             ph.portfolio_value::float AS value
                      FROM portfolio_history ph
                      JOIN accounts a ON a.id = ph.account_id
@@ -289,7 +298,8 @@ router.get('/', requireAuth, async (req, res) => {
                 query(
                     `SELECT s.snapped_at::text   AS date,
                             asn.account_id::text AS account_id,
-                            a.name               AS account_name,
+                            COALESCE(a.display_name, a.name) AS account_name,
+                            a.display_name,
                             a.type               AS account_type,
                             asn.balance::float   AS balance
                      FROM snapshots s
@@ -401,20 +411,28 @@ router.get('/', requireAuth, async (req, res) => {
         // ── Per-account series for the "By Account" chart ─────────────────────────
 
         // Composer accounts: from portfolio_history (daily).
-        const composerAcctMap = new Map(); // account_id → { name, data[] }
+        // account_name is already COALESCE(display_name, name) from the query.
+        const composerAcctMap = new Map(); // account_id → { name, displayName, data[] }
         for (const row of composerHistRows) {
             if (!composerAcctMap.has(row.account_id)) {
-                composerAcctMap.set(row.account_id, { name: row.account_name, data: [] });
+                composerAcctMap.set(row.account_id, {
+                    name:        row.account_name,
+                    displayName: row.display_name || null,
+                    data:        [],
+                });
             }
             composerAcctMap.get(row.account_id).data.push({ date: row.date, value: toNum(row.value) });
         }
 
         // Non-Composer accounts: from account_snapshots (sparse).
-        const nonComposerAcctMap = new Map(); // account_id → { name, type, data[] }
+        const nonComposerAcctMap = new Map(); // account_id → { name, displayName, type, data[] }
         for (const row of nonComposerSnapRows) {
             if (!nonComposerAcctMap.has(row.account_id)) {
                 nonComposerAcctMap.set(row.account_id, {
-                    name: row.account_name, type: row.account_type, data: [],
+                    name:        row.account_name,
+                    displayName: row.display_name || null,
+                    type:        row.account_type,
+                    data:        [],
                 });
             }
             nonComposerAcctMap.get(row.account_id).data.push({ date: row.date, value: toNum(row.balance) });
@@ -423,13 +441,15 @@ router.get('/', requireAuth, async (req, res) => {
         const accountSeries = [
             ...Array.from(composerAcctMap.entries()).map(([accountId, acct]) => ({
                 accountId,
-                accountName: acct.name,
+                accountName: acct.name,        // resolved: display_name if set, else system name
+                displayName: acct.displayName, // raw alias (null when not set)
                 accountType: 'composer',
                 data:        acct.data,
             })),
             ...Array.from(nonComposerAcctMap.entries()).map(([accountId, acct]) => ({
                 accountId,
-                accountName: acct.name,
+                accountName: acct.name,        // resolved: display_name if set, else system name
+                displayName: acct.displayName, // raw alias (null when not set)
                 accountType: acct.type,
                 data:        acct.data,
             })),
@@ -541,12 +561,7 @@ router.post('/reconstruct-history', requireAuth, async (req, res) => {
  * Pulls complete daily NAV history from the Composer API for every Composer
  * account belonging to the authenticated user, then bulk-inserts the rows into
  * portfolio_history (ON CONFLICT DO UPDATE so it is safe to re-run).
- *
- * Returns {
- *   accountsProcessed, rowsInserted,
- *   accounts: [{ name, pointCount, earliest, latest }],
- *   dateRange: { earliest, latest }
- * }
+ * Also runs deposit detection automatically after backfill completes.
  */
 router.post('/backfill-composer', requireAuth, async (req, res) => {
     try {
@@ -554,6 +569,26 @@ router.post('/backfill-composer', requireAuth, async (req, res) => {
         return res.json(result);
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Composer backfill failed' });
+    }
+});
+
+/**
+ * POST /api/performance/detect-deposits
+ *
+ * Scans portfolio_history for day-over-day NAV jumps > 3% and > $500 that
+ * are likely cash deposits, and inserts them into account_transfers with
+ * source='composer_detected' so the heatmap TWR calculation can subtract them.
+ *
+ * Safe to re-run: skips dates that already have an account_transfers row.
+ *
+ * Returns { detectedCount, insertedCount, deposits: [{date, accountId, amount, pctChange}] }
+ */
+router.post('/detect-deposits', requireAuth, async (req, res) => {
+    try {
+        const result = await detectAndInsertComposerDeposits(req.user.id);
+        return res.json(result);
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Deposit detection failed' });
     }
 });
 

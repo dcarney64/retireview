@@ -11,9 +11,11 @@ import Accounts from './pages/Accounts';
 import BrokerSettings from './pages/BrokerSettings';
 import Connections from './pages/Connections';
 import Dashboard from './pages/Dashboard';
-import Goal from './pages/Goal';
 import Import from './pages/Import';
+import NetWorth from './pages/NetWorth';
 import Performance from './pages/Performance';
+import RealEstate from './pages/RealEstate';
+import Retirement from './pages/Retirement';
 import Login from './pages/Login';
 import Settings from './pages/Settings';
 import Signup from './pages/Signup';
@@ -52,8 +54,12 @@ export default function App() {
         <Route path="/connections" element={<AppShell><Page><Connections /></Page></AppShell>} />
         <Route path="/import"      element={<AppShell><Page><Import /></Page></AppShell>} />
         <Route path="/performance" element={<AppShell><Page><Performance /></Page></AppShell>} />
+        <Route path="/net-worth" element={<AppShell><Page><NetWorth /></Page></AppShell>} />
+        <Route path="/real-estate" element={<AppShell><Page><RealEstate /></Page></AppShell>} />
         <Route path="/accounts" element={<AppShell><Page><Accounts /></Page></AppShell>} />
-        <Route path="/goal" element={<AppShell><Page><Goal /></Page></AppShell>} />
+        <Route path="/retirement" element={<AppShell><Page><Retirement /></Page></AppShell>} />
+        {/* Legacy redirect — Goal page became Retirement */}
+        <Route path="/goal" element={<Navigate to="/retirement" replace />} />
 
         <Route path="/settings" element={<AppShell><Page><Settings /></Page></AppShell>} />
 

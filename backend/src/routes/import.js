@@ -523,4 +523,172 @@ async function handlePDFImport(req, res) {
     });
 }
 
+// ─── Manual balance history import ───────────────────────────────────────────
+
+/**
+ * Converts a date string (YYYY-MM or YYYY-MM-DD) to the last day of that month
+ * as an ISO date string (YYYY-MM-DD).
+ */
+function toLastDayOfMonth(dateStr) {
+    if (!dateStr) return null;
+    const s = String(dateStr).trim();
+
+    let year, month;
+    const ymMatch  = s.match(/^(\d{4})-(\d{2})$/);         // 2024-01
+    const ymdMatch = s.match(/^(\d{4})-(\d{2})-\d{2}$/);  // 2024-01-31
+
+    if (ymMatch) {
+        year  = parseInt(ymMatch[1], 10);
+        month = parseInt(ymMatch[2], 10);
+    } else if (ymdMatch) {
+        year  = parseInt(ymdMatch[1], 10);
+        month = parseInt(ymdMatch[2], 10);
+    } else {
+        return null;
+    }
+
+    if (month < 1 || month > 12) return null;
+
+    // Day 0 of the following JS month index = last day of this calendar month
+    const d  = new Date(year, month, 0);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${year}-${mm}-${dd}`;
+}
+
+/**
+ * GET /import/manual-history/dates?accountId=<uuid>
+ * Returns the snapshot dates that already have balance data for this account.
+ * Used by the frontend to mark rows as "New" vs "Update" in the preview step.
+ */
+router.get('/manual-history/dates', requireAuth, async (req, res) => {
+    try {
+        const { accountId } = req.query;
+        if (!accountId) return res.status(400).json({ error: 'accountId is required' });
+
+        // Verify ownership
+        const acct = await query(
+            'SELECT id FROM accounts WHERE id = $1 AND user_id = $2',
+            [accountId, req.user.id]
+        );
+        if (!acct.rows.length) return res.status(404).json({ error: 'Account not found' });
+
+        const result = await query(
+            `SELECT s.snapped_at
+             FROM account_snapshots asn
+             JOIN snapshots s ON s.id = asn.snapshot_id
+             WHERE asn.account_id = $1 AND s.user_id = $2
+             ORDER BY s.snapped_at`,
+            [accountId, req.user.id]
+        );
+
+        return res.json({ dates: result.rows.map((r) => String(r.snapped_at).slice(0, 10)) });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to fetch dates' });
+    }
+});
+
+/**
+ * POST /import/manual-history
+ * Imports monthly balance history for a manual account.
+ * Body: { accountId, rows: [{ date: "2024-01" | "2024-01-31", value: 12500 }, ...] }
+ * Each row upserts a snapshot and recalculates the day's total.
+ */
+router.post('/manual-history', requireAuth, async (req, res) => {
+    try {
+        const { accountId, rows } = req.body || {};
+
+        if (!accountId) return res.status(400).json({ error: 'accountId is required' });
+        if (!Array.isArray(rows) || rows.length === 0) {
+            return res.status(400).json({ error: 'rows must be a non-empty array' });
+        }
+
+        // Verify account ownership
+        const acctResult = await query(
+            `SELECT id, name, display_name FROM accounts WHERE id = $1 AND user_id = $2`,
+            [accountId, req.user.id]
+        );
+        if (!acctResult.rows.length) return res.status(404).json({ error: 'Account not found' });
+        const acct = acctResult.rows[0];
+
+        let rowsImported = 0;
+        const importedDates = [];
+
+        for (const row of rows) {
+            const isoDate = toLastDayOfMonth(row.date);
+            if (!isoDate) continue;
+
+            const balance = Number(row.value);
+            if (!Number.isFinite(balance)) continue;
+
+            // 1. Upsert snapshot for this date (no-op if it already exists)
+            const snapRes = await query(
+                `INSERT INTO snapshots (user_id, total, snapped_at)
+                 VALUES ($1, 0, $2)
+                 ON CONFLICT (user_id, snapped_at)
+                 DO UPDATE SET snapped_at = EXCLUDED.snapped_at
+                 RETURNING id`,
+                [req.user.id, isoDate]
+            );
+            const snapshotId = snapRes.rows[0].id;
+
+            // 2. Delete any existing account_snapshot row for this account+date
+            await query(
+                'DELETE FROM account_snapshots WHERE snapshot_id = $1 AND account_id = $2',
+                [snapshotId, accountId]
+            );
+
+            // 3. Insert the new balance
+            await query(
+                'INSERT INTO account_snapshots (snapshot_id, account_id, balance) VALUES ($1, $2, $3)',
+                [snapshotId, accountId, balance]
+            );
+
+            // 4. Recalculate the snapshot total from all current account_snapshot rows
+            await query(
+                `UPDATE snapshots
+                 SET total = (
+                     SELECT COALESCE(SUM(asn.balance), 0)
+                     FROM account_snapshots asn
+                     WHERE asn.snapshot_id = $1
+                 )
+                 WHERE id = $1`,
+                [snapshotId]
+            );
+
+            importedDates.push(isoDate);
+            rowsImported++;
+        }
+
+        importedDates.sort();
+
+        // Compute some stats for the result card
+        const balanceMap = {};
+        rows.forEach((r) => {
+            const d = toLastDayOfMonth(r.date);
+            if (d) balanceMap[d] = Number(r.value) || 0;
+        });
+        const values = importedDates.map((d) => balanceMap[d]).filter(Number.isFinite);
+        const peakBalance = values.length ? Math.max(...values) : null;
+        const peakDate    = peakBalance !== null
+            ? importedDates[values.indexOf(peakBalance)]
+            : null;
+        const finalBalance = values.length ? values[values.length - 1] : null;
+
+        return res.json({
+            rowsImported,
+            dateRange: {
+                earliest: importedDates[0] || null,
+                latest:   importedDates[importedDates.length - 1] || null,
+            },
+            accountName:   acct.display_name || acct.name,
+            peakBalance,
+            peakDate,
+            finalBalance,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Import failed' });
+    }
+});
+
 export default router;

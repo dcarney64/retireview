@@ -112,6 +112,73 @@ function formatAxisDate(dateStr) {
   });
 }
 
+// Compact axis tick label: "Jan '25", "Jul '26" etc.
+function formatAxisTick(dateStr) {
+  if (!dateStr) return '';
+  const d   = new Date(dateStr + 'T00:00:00');
+  const mon = d.toLocaleDateString('en-US', { month: 'short' });
+  const yr  = String(d.getFullYear()).slice(2);
+  return `${mon} '${yr}`;
+}
+
+// Find year-transition points in a series [{date, ...}].
+// Returns [{date, year}] for the first data point in each new year (skip first).
+function getYearMarkers(series) {
+  if (!series?.length) return [];
+  const markers = [];
+  let prevYear  = series[0].date.slice(0, 4);
+  for (const p of series) {
+    const year = p.date.slice(0, 4);
+    if (year !== prevYear) {
+      markers.push({ date: p.date, year });
+      prevYear = year;
+    }
+  }
+  return markers;
+}
+
+// Generate explicit x-axis tick dates at a density appropriate for the
+// data length: monthly (<6 mo), quarterly (6-18 mo), semi-annual (>18 mo).
+// Returns an array of date strings from the series, or undefined to let
+// Recharts auto-tick.
+function getXAxisTicks(series) {
+  if (!series?.length) return undefined;
+  const dates     = series.map((p) => p.date);
+  const first     = new Date(dates[0] + 'T00:00:00');
+  const last      = new Date(dates[dates.length - 1] + 'T00:00:00');
+  const totalDays = (last - first) / 86_400_000;
+
+  let monthStep;
+  if      (totalDays < 180) monthStep = 1;   // monthly
+  else if (totalDays < 540) monthStep = 3;   // quarterly
+  else                       monthStep = 6;   // semi-annual
+
+  const dateSet = new Set(dates);
+  const ticks   = [];
+
+  // Start at the first full month boundary on or after the first data point.
+  let cur = new Date(first.getFullYear(), first.getMonth(), 1);
+  while (cur < first) cur = new Date(cur.getFullYear(), cur.getMonth() + monthStep, 1);
+
+  while (cur <= last) {
+    const iso = cur.toISOString().slice(0, 10);
+    if (dateSet.has(iso)) {
+      ticks.push(iso);
+    } else {
+      // Snap forward up to 7 days to find the nearest available data point.
+      for (let d = 1; d <= 7; d++) {
+        const adj    = new Date(cur);
+        adj.setDate(adj.getDate() + d);
+        const adjIso = adj.toISOString().slice(0, 10);
+        if (dateSet.has(adjIso)) { ticks.push(adjIso); break; }
+      }
+    }
+    cur = new Date(cur.getFullYear(), cur.getMonth() + monthStep, 1);
+  }
+
+  return ticks.length ? ticks : undefined;
+}
+
 function heatmapClass(ret) {
   if (ret === null || ret === undefined || !Number.isFinite(ret)) {
     return 'bg-slate-700 text-slate-400';
@@ -159,10 +226,18 @@ function ChartTooltip({ active, payload, label, labelFormatter, valueFormatter }
   );
 }
 
-function StatTile({ label, value, sub, valueClass = 'text-slate-100' }) {
+function StatTile({ label, value, sub, valueClass = 'text-slate-100', tooltip }) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <p className="text-xs text-slate-500">{label}</p>
+      <div className="flex items-center gap-1.5">
+        <p className="text-xs text-slate-500">{label}</p>
+        {tooltip ? (
+          <span
+            className="inline-flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full bg-slate-700 text-[9px] font-bold text-slate-400"
+            title={tooltip}
+          >?</span>
+        ) : null}
+      </div>
       <p className={`mt-2 font-mono text-2xl font-semibold ${valueClass}`}>{value}</p>
       {sub ? <p className="mt-0.5 text-xs text-slate-500">{sub}</p> : null}
     </div>
@@ -259,12 +334,28 @@ export default function Performance() {
   const [drawdownWindow,  setDrawdownWindow]  = useState('all');
   const [benchmark,       setBenchmark]       = useState('None');
   const [reconstructMsg,  setReconstructMsg]  = useState(null);
+  // Inline rename state (By Account legend)
+  const [editingAccountId, setEditingAccountId] = useState(null);
+  const [editingName,      setEditingName]      = useState('');
 
   // ── Data fetching ───────────────────────────────────────────────────────────
   const perfQuery = useQuery({
     queryKey: ['performance'],
     queryFn:  async () => (await apiClient.get('/performance')).data,
     staleTime: 5 * 60_000,
+  });
+
+  // Quick rename: sets display_name via PUT and refreshes both performance
+  // and accounts queries so names update everywhere simultaneously.
+  const renameMutation = useMutation({
+    mutationFn: ({ accountId, displayName }) =>
+      apiClient.put(`/accounts/${accountId}`, { display_name: displayName?.trim() || null }),
+    onSuccess: () => {
+      setEditingAccountId(null);
+      setEditingName('');
+      queryClient.invalidateQueries({ queryKey: ['performance'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    },
   });
 
   const reconstructMutation = useMutation({
@@ -432,6 +523,16 @@ export default function Performance() {
     () => filterSeriesByWindow(data?.accountTypeSeries || [], historyWindow),
     [data?.accountTypeSeries, historyWindow]
   );
+
+  // ── Year markers and smart tick arrays for each chart ───────────────────────
+  const yearMarkers       = useMemo(() => getYearMarkers(windowedSeries),  [windowedSeries]);
+  const xAxisTicks        = useMemo(() => getXAxisTicks(windowedSeries),   [windowedSeries]);
+  const drawdownMarkers   = useMemo(() => getYearMarkers(drawdownPoints),  [drawdownPoints]);
+  const drawdownTicks     = useMemo(() => getXAxisTicks(drawdownPoints),   [drawdownPoints]);
+  const stackedMarkers    = useMemo(() => getYearMarkers(stackedData),     [stackedData]);
+  const stackedTicks      = useMemo(() => getXAxisTicks(stackedData),      [stackedData]);
+  const accountYearMarkers = useMemo(() => getYearMarkers(accountChartData), [accountChartData]);
+  const accountXAxisTicks  = useMemo(() => getXAxisTicks(accountChartData),  [accountChartData]);
 
   // ── Stats for selected window ─────────────────────────────────────────────
   const wStats      = data?.windowStats?.[historyWindow] || {};
@@ -684,22 +785,27 @@ export default function Performance() {
               // Default: global portfolio stats.
               <>
                 <StatTile
-                  label="TWR (transfer-adjusted)"
+                  label="TWR"
                   value={toPercent(wStats.twr)}
-                  sub={`${wStats.snapshotCount || 0} snapshots`}
+                  sub={`${wStats.snapshotCount || 0} data points`}
                   valueClass={wStats.twr != null ? twrColor : 'text-slate-500'}
+                  tooltip="Time-Weighted Return — removes the effect of deposits and withdrawals to measure pure investment performance. If TWR is much lower than Simple Return, most of the portfolio growth came from new deposits rather than market gains."
                 />
                 <StatTile
                   label="Simple return"
                   value={toPercent(wStats.simpleReturn)}
-                  sub="unadjusted"
+                  sub="includes deposits"
                   valueClass={wStats.simpleReturn != null ? retColor : 'text-slate-500'}
+                  tooltip="(End Value − Start Value) / Start Value — not adjusted for cash flows. Inflated when large deposits occurred in the window."
                 />
                 <StatTile
-                  label="Max drawdown (all time)"
-                  value={data.drawdown?.maxDrawdown != null ? toPercent(data.drawdown.maxDrawdown) : '—'}
-                  sub={data.drawdown?.troughDate ? `trough ${formatDate(data.drawdown.troughDate)}` : null}
-                  valueClass={drawdownColor}
+                  label="Investment gain"
+                  value={wStats.dollarGain != null ? formatCurrency(wStats.dollarGain) : '—'}
+                  sub="excl. deposits & withdrawals"
+                  valueClass={wStats.dollarGain != null
+                    ? wStats.dollarGain >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    : 'text-slate-500'}
+                  tooltip="Dollar return from market performance only: (End − Start − Net Deposits). Negative means the market lost money even if the portfolio grew (due to new contributions)."
                 />
                 <StatTile
                   label="Best month"
@@ -743,6 +849,10 @@ export default function Performance() {
                 {viewMode !== 'account' && windowedSeries.length >= 2 ? (
                   <p className={`text-sm font-mono ${wStats.simpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {toPercent(wStats.simpleReturn)} simple · {toPercent(wStats.twr)} TWR
+                    {wStats.simpleReturn != null && wStats.twr != null &&
+                      Math.abs(wStats.simpleReturn - wStats.twr) > 0.05 ? (
+                      <span className="ml-1.5 text-slate-500 text-xs font-sans">gap = deposits</span>
+                    ) : null}
                   </p>
                 ) : viewMode === 'account' && singleAcctSimpleReturn != null ? (
                   <p className={`text-sm font-mono ${singleAcctSimpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -811,11 +921,12 @@ export default function Performance() {
                         <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
                         <XAxis
                           dataKey="date"
-                          tickFormatter={formatAxisDate}
+                          ticks={accountXAxisTicks}
+                          tickFormatter={formatAxisTick}
                           tick={{ fill: '#94a3b8', fontSize: 11 }}
                           axisLine={{ stroke: '#334155' }}
                           tickLine={false}
-                          minTickGap={40}
+                          minTickGap={32}
                         />
                         <YAxis
                           tickFormatter={(v) => formatCurrency(v, { compact: true })}
@@ -827,12 +938,22 @@ export default function Performance() {
                         <Tooltip
                           content={
                             <ChartTooltip
-                              labelFormatter={formatAxisDate}
+                              labelFormatter={formatDate}
                               valueFormatter={(v) => formatCurrency(v)}
                             />
                           }
                           cursor={{ stroke: '#475569', strokeWidth: 1 }}
                         />
+                        {/* Year boundary markers */}
+                        {accountYearMarkers.map((m) => (
+                          <ReferenceLine
+                            key={`yr-acct-${m.year}`}
+                            x={m.date}
+                            stroke="#374151"
+                            strokeDasharray="3 3"
+                            label={{ value: m.year, position: 'insideTopRight', fill: '#6b7280', fontSize: 10 }}
+                          />
+                        ))}
                         {accountSeries
                           .filter((a) => isAccountSelected(a.accountId))
                           .map((acct, i) => (
@@ -851,22 +972,76 @@ export default function Performance() {
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
-                  {/* Legend */}
-                  <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+                  {/* Legend — hover to reveal ✏ rename button */}
+                  <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs">
                     {accountSeries
                       .filter((a) => isAccountSelected(a.accountId))
-                      .map((acct, i) => (
-                        <li key={acct.accountId} className="flex items-center gap-1.5">
-                          <span
-                            className="inline-block h-2 w-2 shrink-0 rounded-full"
-                            style={{ background: ACCOUNT_PALETTE[i % ACCOUNT_PALETTE.length] }}
-                          />
-                          <span className="text-slate-400">{shortAccountName(acct.accountName)}</span>
-                          <span className="text-slate-600">
-                            {acct.data.length} pts
-                          </span>
-                        </li>
-                      ))}
+                      .map((acct, i) => {
+                        const color    = ACCOUNT_PALETTE[i % ACCOUNT_PALETTE.length];
+                        const isEditing = editingAccountId === acct.accountId;
+                        return (
+                          <li key={acct.accountId} className="group flex items-center gap-1.5">
+                            <span
+                              className="inline-block h-2 w-2 shrink-0 rounded-full"
+                              style={{ background: color }}
+                            />
+                            {isEditing ? (
+                              /* Inline rename form */
+                              <span className="flex items-center gap-1">
+                                <input
+                                  className="w-36 rounded border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                                  value={editingName}
+                                  onChange={(e) => setEditingName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      renameMutation.mutate({ accountId: acct.accountId, displayName: editingName });
+                                    }
+                                    if (e.key === 'Escape') setEditingAccountId(null);
+                                  }}
+                                  // eslint-disable-next-line jsx-a11y/no-autofocus
+                                  autoFocus
+                                />
+                                <button
+                                  type="button"
+                                  title="Save alias"
+                                  disabled={renameMutation.isPending}
+                                  className="px-0.5 text-emerald-400 hover:text-emerald-300 disabled:opacity-40"
+                                  onClick={() => renameMutation.mutate({ accountId: acct.accountId, displayName: editingName })}
+                                >
+                                  ✓
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Cancel"
+                                  className="px-0.5 text-slate-400 hover:text-slate-200"
+                                  onClick={() => setEditingAccountId(null)}
+                                >
+                                  ✗
+                                </button>
+                              </span>
+                            ) : (
+                              /* Normal display with hover-edit button */
+                              <span className="flex items-center gap-1">
+                                <span className="text-slate-400">{shortAccountName(acct.accountName)}</span>
+                                <button
+                                  type="button"
+                                  title="Rename account"
+                                  className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-300 transition-opacity focus:opacity-100 leading-none"
+                                  onClick={() => {
+                                    // Pre-fill with current alias (empty if none set)
+                                    setEditingAccountId(acct.accountId);
+                                    setEditingName(acct.displayName ?? '');
+                                  }}
+                                >
+                                  ✏
+                                </button>
+                              </span>
+                            )}
+                            <span className="text-slate-600">{acct.data.length} pts</span>
+                          </li>
+                        );
+                      })}
                   </ul>
                 </>
               )
@@ -884,7 +1059,8 @@ export default function Performance() {
                         <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
                         <XAxis
                           dataKey="date"
-                          tickFormatter={formatAxisDate}
+                          ticks={xAxisTicks}
+                          tickFormatter={formatAxisTick}
                           tick={{ fill: '#94a3b8', fontSize: 11 }}
                           axisLine={{ stroke: '#334155' }}
                           tickLine={false}
@@ -900,7 +1076,7 @@ export default function Performance() {
                         <Tooltip
                           content={
                             <ChartTooltip
-                              labelFormatter={formatAxisDate}
+                              labelFormatter={formatDate}
                               valueFormatter={(v, name) =>
                                 `${Number(v).toFixed(1)} (${name === 'portfolio' ? 'Portfolio' : benchmark})`
                               }
@@ -908,6 +1084,16 @@ export default function Performance() {
                           }
                           cursor={{ stroke: '#475569', strokeWidth: 1 }}
                         />
+                        {/* Year boundary markers */}
+                        {yearMarkers.map((m) => (
+                          <ReferenceLine
+                            key={`yr-norm-${m.year}`}
+                            x={m.date}
+                            stroke="#374151"
+                            strokeDasharray="3 3"
+                            label={{ value: m.year, position: 'insideTopRight', fill: '#6b7280', fontSize: 10 }}
+                          />
+                        ))}
                         <Line
                           type="monotone"
                           dataKey="portfolio"
@@ -940,7 +1126,8 @@ export default function Performance() {
                         <CartesianGrid stroke="#1e293b" strokeDasharray="0" vertical={false} />
                         <XAxis
                           dataKey="date"
-                          tickFormatter={formatAxisDate}
+                          ticks={xAxisTicks}
+                          tickFormatter={formatAxisTick}
                           tick={{ fill: '#94a3b8', fontSize: 11 }}
                           axisLine={{ stroke: '#334155' }}
                           tickLine={false}
@@ -956,12 +1143,22 @@ export default function Performance() {
                         <Tooltip
                           content={
                             <ChartTooltip
-                              labelFormatter={formatAxisDate}
+                              labelFormatter={formatDate}
                               valueFormatter={(v) => formatCurrency(v)}
                             />
                           }
                           cursor={{ stroke: '#475569', strokeWidth: 1 }}
                         />
+                        {/* Year boundary markers */}
+                        {yearMarkers.map((m) => (
+                          <ReferenceLine
+                            key={`yr-abs-${m.year}`}
+                            x={m.date}
+                            stroke="#374151"
+                            strokeDasharray="3 3"
+                            label={{ value: m.year, position: 'insideTopRight', fill: '#6b7280', fontSize: 10 }}
+                          />
+                        ))}
                         {/* Transfer reference lines */}
                         {transfersInWindow.map((t, i) => (
                           <ReferenceLine
@@ -970,7 +1167,7 @@ export default function Performance() {
                             stroke={t.amount >= 0 ? '#22c55e' : '#f59e0b'}
                             strokeDasharray="4 4"
                             label={{
-                              value: `${t.amount >= 0 ? '+' : ''}${formatCurrency(t.amount)}`,
+                              value: `${t.amount >= 0 ? '▲' : '▼'} ${t.amount >= 0 ? '+' : ''}${formatCurrency(t.amount)}`,
                               fill:  t.amount >= 0 ? '#22c55e' : '#f59e0b',
                               fontSize: 10,
                               position: 'insideTopRight',
@@ -1012,7 +1209,8 @@ export default function Performance() {
                       <CartesianGrid stroke="#1e293b" vertical={false} />
                       <XAxis
                         dataKey="date"
-                        tickFormatter={formatAxisDate}
+                        ticks={stackedTicks}
+                        tickFormatter={formatAxisTick}
                         tick={{ fill: '#94a3b8', fontSize: 11 }}
                         axisLine={{ stroke: '#334155' }}
                         tickLine={false}
@@ -1028,12 +1226,22 @@ export default function Performance() {
                       <Tooltip
                         content={
                           <ChartTooltip
-                            labelFormatter={formatAxisDate}
+                            labelFormatter={formatDate}
                             valueFormatter={(v) => formatCurrency(v)}
                           />
                         }
                         cursor={{ stroke: '#475569', strokeWidth: 1 }}
                       />
+                      {/* Year boundary markers */}
+                      {stackedMarkers.map((m) => (
+                        <ReferenceLine
+                          key={`yr-stacked-${m.year}`}
+                          x={m.date}
+                          stroke="#374151"
+                          strokeDasharray="3 3"
+                          label={{ value: m.year, position: 'insideTopRight', fill: '#6b7280', fontSize: 10 }}
+                        />
+                      ))}
                       {types.map((type) => {
                         const color = typeColor(type);
                         return (
@@ -1122,7 +1330,8 @@ export default function Performance() {
                     <CartesianGrid stroke="#1e293b" vertical={false} />
                     <XAxis
                       dataKey="date"
-                      tickFormatter={formatAxisDate}
+                      ticks={drawdownTicks}
+                      tickFormatter={formatAxisTick}
                       tick={{ fill: '#94a3b8', fontSize: 11 }}
                       axisLine={{ stroke: '#334155' }}
                       tickLine={false}
@@ -1139,12 +1348,22 @@ export default function Performance() {
                     <Tooltip
                       content={
                         <ChartTooltip
-                          labelFormatter={formatAxisDate}
+                          labelFormatter={formatDate}
                           valueFormatter={(v) => `${Number(v).toFixed(2)}%`}
                         />
                       }
                       cursor={{ stroke: '#475569', strokeWidth: 1 }}
                     />
+                    {/* Year boundary markers */}
+                    {drawdownMarkers.map((m) => (
+                      <ReferenceLine
+                        key={`yr-dd-${m.year}`}
+                        x={m.date}
+                        stroke="#374151"
+                        strokeDasharray="3 3"
+                        label={{ value: m.year, position: 'insideTopRight', fill: '#6b7280', fontSize: 10 }}
+                      />
+                    ))}
                     <Area
                       type="monotone"
                       dataKey="drawdownPct"
