@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -459,6 +459,158 @@ function FileSection({ item, onToggleSelection, onToggleAll, onRemove }) {
   );
 }
 
+// ─── Composer NAV history backfill ───────────────────────────────────────────
+
+function ComposerHistorySection() {
+  const queryClient = useQueryClient();
+  const navigate    = useNavigate();
+  const [result, setResult] = useState(null);
+  const [error,  setError]  = useState(null);
+
+  // Query accounts so we can show a live Composer account count.
+  const accountsQuery = useQuery({
+    queryKey: ['accounts'],
+    queryFn:  async () => (await apiClient.get('/accounts')).data,
+    staleTime: 60_000,
+  });
+
+  const composerAccounts = (accountsQuery.data || []).filter(
+    (a) => a.type === 'composer' || a.source === 'composer'
+  );
+
+  const backfillMutation = useMutation({
+    mutationFn: async () => (await apiClient.post('/performance/backfill-composer')).data,
+    onSuccess: (data) => {
+      setResult(data);
+      setError(null);
+      // Invalidate performance data so the chart refreshes.
+      queryClient.invalidateQueries({ queryKey: ['performance'] });
+    },
+    onError: (err) => {
+      setError(err?.response?.data?.error || 'Import failed — please try again.');
+      setResult(null);
+    },
+  });
+
+  if (composerAccounts.length === 0 && !accountsQuery.isLoading) {
+    // No Composer accounts connected — don't show the card.
+    return null;
+  }
+
+  return (
+    <section>
+      <div className="rounded-xl border border-indigo-700/40 bg-indigo-900/10 p-5 space-y-3">
+        {/* Header */}
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 text-2xl">📈</span>
+          <div>
+            <h3 className="font-semibold text-indigo-300">Import Composer NAV History</h3>
+            <p className="mt-1 text-sm text-slate-400">
+              Pull complete daily portfolio history from your connected Composer accounts going
+              back to account open date. This gives the Performance page a dense daily chart
+              instead of sparse snapshots.
+            </p>
+          </div>
+        </div>
+
+        {/* Account summary */}
+        {!accountsQuery.isLoading && composerAccounts.length > 0 && !result && (
+          <div className="rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm">
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-slate-300">
+              <span>
+                <span className="text-slate-500">Accounts: </span>
+                {composerAccounts.length} connected
+              </span>
+              <span>
+                <span className="text-slate-500">Expected coverage: </span>
+                ~479 data points per account (from account open)
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-slate-500">
+              {composerAccounts.map((a) => (
+                <span key={a.id}>• {a.name}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Pending (importing) state */}
+        {backfillMutation.isPending && (
+          <div className="rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3">
+            <div className="flex items-center gap-2 text-sm text-slate-300">
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-600 border-t-indigo-400" />
+              Fetching history from Composer API… this may take 10–30 seconds.
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Respecting the 1 req/sec rate limit between accounts.
+            </p>
+          </div>
+        )}
+
+        {/* Success result */}
+        {result && !backfillMutation.isPending && (
+          <div className="rounded-lg border border-emerald-700/50 bg-emerald-900/15 px-4 py-3 space-y-2">
+            <p className="font-medium text-emerald-300">
+              ✓ Imported {result.rowsInserted?.toLocaleString()} data points across{' '}
+              {result.accountsProcessed} account{result.accountsProcessed === 1 ? '' : 's'}
+            </p>
+            {result.dateRange?.earliest && (
+              <p className="text-sm text-slate-400">
+                Coverage:{' '}
+                {new Date(result.dateRange.earliest + 'T00:00:00').toLocaleDateString('en-US', {
+                  month: 'long', day: 'numeric', year: 'numeric',
+                })}{' '}
+                →{' '}
+                {new Date(result.dateRange.latest + 'T00:00:00').toLocaleDateString('en-US', {
+                  month: 'long', day: 'numeric', year: 'numeric',
+                })}
+              </p>
+            )}
+            {result.accounts?.length > 0 && (
+              <div className="flex flex-wrap gap-x-5 gap-y-0.5 text-xs text-slate-500">
+                {result.accounts.map((a) => (
+                  <span key={a.name}>
+                    {a.name}: {a.pointCount?.toLocaleString()} pts
+                    {a.error ? <span className="text-red-400"> (error)</span> : ''}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <p className="text-sm text-red-400">{error}</p>
+        )}
+
+        {/* Action row */}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={() => { setResult(null); setError(null); backfillMutation.mutate(); }}
+            disabled={backfillMutation.isPending || composerAccounts.length === 0}
+            className="bg-indigo-700 hover:bg-indigo-600 text-sm"
+          >
+            {backfillMutation.isPending
+              ? 'Importing…'
+              : result
+              ? 'Re-import Composer History'
+              : 'Import Composer History'}
+          </Button>
+          {result && (
+            <Button
+              onClick={() => navigate('/performance')}
+              className="bg-slate-700 hover:bg-slate-600 text-sm"
+            >
+              View Performance →
+            </Button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Import history ───────────────────────────────────────────────────────────
 
 function ImportHistory() {
@@ -774,6 +926,9 @@ export default function Import() {
 
       {/* Method cards */}
       <MethodCards />
+
+      {/* Composer NAV history */}
+      <ComposerHistorySection />
 
       {/* Drop zone */}
       <div className="space-y-3">

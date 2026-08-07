@@ -201,6 +201,7 @@ export async function fetchActivityReports(accountId, apiKeyId, apiSecret, optio
 // Syncs balances for all Composer accounts for a user.
 // Reads credentials from composer_credentials; upserts into accounts using external_id.
 // On INSERT: sets name from Composer (account type + number). On UPDATE: balance only.
+// Also inserts today's portfolio value into portfolio_history for daily tracking.
 // Returns { accountsUpdated }.
 export async function syncComposerAccountsForUser(userId) {
     const credResult = await query(
@@ -217,9 +218,11 @@ export async function syncComposerAccountsForUser(userId) {
     const composerAccounts = await fetchComposerAccounts(key_id, keySecret);
 
     let accountsUpdated = 0;
+    const today = new Date().toISOString().slice(0, 10);
 
     for (const ca of composerAccounts) {
-        await query(
+        // Upsert account row and get back its DB id.
+        const upsertResult = await query(
             `INSERT INTO accounts
                (user_id, name, type, balance, source, external_id, institution, last_synced_at, updated_at)
              VALUES ($1, $2, 'composer', $3, 'composer', $4, 'Composer', NOW(), NOW())
@@ -227,10 +230,25 @@ export async function syncComposerAccountsForUser(userId) {
              DO UPDATE SET
                balance        = EXCLUDED.balance,
                last_synced_at = NOW(),
-               updated_at     = NOW()`,
+               updated_at     = NOW()
+             RETURNING id`,
             [userId, ca.name, ca.value, ca.id]
         );
         accountsUpdated++;
+
+        // Keep portfolio_history current with today's value so the
+        // Performance chart stays fresh without a manual backfill.
+        const dbAccountId = upsertResult.rows[0]?.id;
+        if (dbAccountId && ca.value > 0) {
+            await query(
+                `INSERT INTO portfolio_history
+                   (user_id, account_id, history_date, portfolio_value, source)
+                 VALUES ($1, $2, $3, $4, 'composer')
+                 ON CONFLICT (account_id, history_date)
+                 DO UPDATE SET portfolio_value = EXCLUDED.portfolio_value`,
+                [userId, dbAccountId, today, ca.value]
+            );
+        }
     }
 
     await query(
@@ -246,4 +264,110 @@ export async function syncComposerAccountsForUser(userId) {
     }
 
     return { accountsUpdated };
+}
+
+// ─── Historical NAV backfill ──────────────────────────────────────────────────
+
+// Fetches complete daily portfolio history from Composer for every Composer
+// account belonging to userId and bulk-inserts into portfolio_history.
+//
+// The Composer endpoint returns { epoch_ms: [...], series: [...] } where
+// each element is a daily NAV value going back to account inception.
+//
+// Returns { accountsProcessed, rowsInserted, accounts, dateRange }.
+export async function backfillPortfolioHistory(userId) {
+    const credResult = await query(
+        'SELECT key_id, key_secret_enc FROM composer_credentials WHERE user_id = $1',
+        [userId]
+    );
+
+    if (credResult.rows.length === 0) {
+        return { accountsProcessed: 0, rowsInserted: 0, skipped: true,
+                 reason: 'No Composer credentials found' };
+    }
+
+    const { key_id, key_secret_enc } = credResult.rows[0];
+    const keySecret = decryptSecret(key_secret_enc);
+
+    // All Composer accounts for this user that have an external_id.
+    const accountsResult = await query(
+        `SELECT id, external_id, name
+         FROM accounts
+         WHERE user_id = $1 AND source = 'composer' AND external_id IS NOT NULL
+         ORDER BY name`,
+        [userId]
+    );
+
+    if (accountsResult.rows.length === 0) {
+        return { accountsProcessed: 0, rowsInserted: 0, skipped: true,
+                 reason: 'No Composer accounts found' };
+    }
+
+    let totalRowsInserted = 0;
+    let globalEarliest    = null;
+    let globalLatest      = null;
+    const accountSummaries = [];
+
+    for (const account of accountsResult.rows) {
+        try {
+            console.log(`[composer] Fetching portfolio history for ${account.name} (${account.external_id})`);
+            const histData = await fetchPortfolioHistory(account.external_id, key_id, keySecret);
+
+            const epochMs = histData.epoch_ms || [];
+            const series  = histData.series   || [];
+
+            if (!epochMs.length) {
+                console.warn(`[composer] No history returned for ${account.name}`);
+                accountSummaries.push({ name: account.name, pointCount: 0 });
+                continue;
+            }
+
+            // Convert parallel arrays → [{date, value}], skip zero-value rows.
+            const points = epochMs
+                .map((ms, i) => ({
+                    date:  new Date(ms).toISOString().slice(0, 10),
+                    value: parseFloat(series[i] ?? 0),
+                }))
+                .filter((p) => p.value > 0);
+
+            // Bulk upsert into portfolio_history one row at a time.
+            // ~479 rows per account — fast enough without a batched VALUES list.
+            for (const pt of points) {
+                await query(
+                    `INSERT INTO portfolio_history
+                       (user_id, account_id, history_date, portfolio_value, source)
+                     VALUES ($1, $2, $3, $4, 'composer')
+                     ON CONFLICT (account_id, history_date)
+                     DO UPDATE SET portfolio_value = EXCLUDED.portfolio_value`,
+                    [userId, account.id, pt.date, pt.value]
+                );
+            }
+
+            totalRowsInserted += points.length;
+
+            if (points.length > 0) {
+                const sortedDates = points.map((p) => p.date).sort();
+                const earliest    = sortedDates[0];
+                const latest      = sortedDates[sortedDates.length - 1];
+                if (!globalEarliest || earliest < globalEarliest) globalEarliest = earliest;
+                if (!globalLatest   || latest   > globalLatest)   globalLatest   = latest;
+                accountSummaries.push({ name: account.name, pointCount: points.length, earliest, latest });
+            } else {
+                accountSummaries.push({ name: account.name, pointCount: 0 });
+            }
+
+            // Respect Composer's 1 req/sec rate limit between accounts.
+            await new Promise((r) => setTimeout(r, 1100));
+        } catch (err) {
+            console.error(`[composer] Backfill failed for ${account.name}:`, err.message);
+            accountSummaries.push({ name: account.name, pointCount: 0, error: err.message });
+        }
+    }
+
+    return {
+        accountsProcessed: accountSummaries.filter((a) => a.pointCount > 0).length,
+        rowsInserted:      totalRowsInserted,
+        accounts:          accountSummaries,
+        dateRange:         { earliest: globalEarliest, latest: globalLatest },
+    };
 }

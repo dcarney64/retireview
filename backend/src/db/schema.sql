@@ -334,3 +334,24 @@ CREATE INDEX IF NOT EXISTS idx_transactions_account
   ON account_transactions (account_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date
   ON account_transactions (account_id, transacted_at DESC);
+
+-- ============================================================
+-- PORTFOLIO HISTORY
+-- Daily NAV values per account, pulled from Composer API.
+-- Provides dense time-series for the Performance page charts,
+-- replacing sparse snapshots for Composer-sourced accounts.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS portfolio_history (
+  id              BIGSERIAL PRIMARY KEY,
+  user_id         UUID NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  history_date    DATE NOT NULL,
+  portfolio_value NUMERIC(15,2) NOT NULL,
+  source          TEXT NOT NULL DEFAULT 'composer',
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(account_id, history_date)
+);
+CREATE INDEX IF NOT EXISTS idx_portfolio_history_account
+  ON portfolio_history(account_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_history_user_date
+  ON portfolio_history(user_id, history_date);

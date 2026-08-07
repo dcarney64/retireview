@@ -43,6 +43,20 @@ const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 const SERIES_BLUE  = '#3987e5';
 const CARD_SURFACE = '#0f172a'; // slate-900
 
+// Palette for per-account lines — distinct, CVD-safe, readable on slate-900.
+const ACCOUNT_PALETTE = [
+  '#3987e5', // blue
+  '#d95926', // orange
+  '#199e70', // green
+  '#c98500', // amber
+  '#d55181', // pink
+  '#9085e9', // violet
+  '#e85d04', // deep orange
+  '#008300', // dark green
+  '#7b2d8b', // purple
+  '#1a7a4a', // forest green
+];
+
 // ─── Pure utility functions ───────────────────────────────────────────────────
 
 function getWindowCutoff(windowId) {
@@ -110,6 +124,12 @@ function heatmapClass(ret) {
   if (pct > -2) return 'bg-red-200 text-slate-900';
   if (pct > -5) return 'bg-red-400 text-slate-900';
   return 'bg-red-600 text-white';
+}
+
+// Short display name for an account (strip the " · ACCT#" suffix when present).
+function shortAccountName(name) {
+  const idx = name.lastIndexOf(' · ');
+  return idx >= 0 ? name.slice(0, idx) : name;
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -228,11 +248,17 @@ function MonthlyHeatmap({ data, isLoading }) {
 
 export default function Performance() {
   const queryClient = useQueryClient();
+
+  // View mode: 'all' | 'type' | 'account'
+  const [viewMode,         setViewMode]         = useState('all');
   const [accountTypeFilter, setAccountTypeFilter] = useState('all');
-  const [historyWindow, setHistoryWindow]         = useState('ytd');
-  const [drawdownWindow, setDrawdownWindow]       = useState('all');
-  const [benchmark, setBenchmark]                 = useState('None');
-  const [reconstructMsg, setReconstructMsg]       = useState(null);
+  // null → all accounts selected; Set<accountId> → specific accounts
+  const [selectedAccountIds, setSelectedAccountIds] = useState(null);
+
+  const [historyWindow,   setHistoryWindow]   = useState('ytd');
+  const [drawdownWindow,  setDrawdownWindow]  = useState('all');
+  const [benchmark,       setBenchmark]       = useState('None');
+  const [reconstructMsg,  setReconstructMsg]  = useState(null);
 
   // ── Data fetching ───────────────────────────────────────────────────────────
   const perfQuery = useQuery({
@@ -273,16 +299,81 @@ export default function Performance() {
 
   const data = perfQuery.data;
 
+  // ── Derived: accountSeries + palette ───────────────────────────────────────
+  const accountSeries = data?.accountSeries || [];
+
+  // Toggle a single account in the "By Account" selector.
+  function toggleAccount(accountId) {
+    const allIds = new Set(accountSeries.map((a) => a.accountId));
+    const current = selectedAccountIds ?? allIds;
+    const next = new Set(current);
+    if (next.has(accountId)) next.delete(accountId);
+    else                     next.add(accountId);
+    // If all are selected again, go back to null (simpler state).
+    setSelectedAccountIds(next.size === allIds.size ? null : next);
+  }
+
+  function isAccountSelected(accountId) {
+    return !selectedAccountIds || selectedAccountIds.has(accountId);
+  }
+
+  // ── Derived: "By Account" chart data ───────────────────────────────────────
+  // Merges per-account series into a single date-keyed array for Recharts.
+  const accountChartData = useMemo(() => {
+    if (!accountSeries.length) return [];
+
+    const activeAccounts = accountSeries.filter((a) => isAccountSelected(a.accountId));
+    if (!activeAccounts.length) return [];
+
+    const cutoff = getWindowCutoff(historyWindow);
+
+    // Build Map<date, value> per account and collect all dates.
+    const allDateSet = new Set();
+    const accountMaps = activeAccounts.map((acct) => {
+      const filtered = cutoff
+        ? acct.data.filter((p) => new Date(p.date + 'T00:00:00') >= cutoff)
+        : acct.data;
+      const map = new Map(filtered.map((p) => [p.date, p.value]));
+      for (const date of map.keys()) allDateSet.add(date);
+      return { acct, map };
+    });
+
+    const sortedDates = [...allDateSet].sort();
+    return sortedDates.map((date) => {
+      const point = { date };
+      for (const { acct, map } of accountMaps) {
+        point[acct.accountId] = map.get(date) ?? null;
+      }
+      return point;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountSeries, selectedAccountIds, historyWindow]);
+
+  // Stats for a single selected account (used in stat tiles).
+  const singleSelectedAccount = useMemo(() => {
+    if (viewMode !== 'account' || !selectedAccountIds || selectedAccountIds.size !== 1) return null;
+    const [id] = selectedAccountIds;
+    return accountSeries.find((a) => a.accountId === id) || null;
+  }, [viewMode, selectedAccountIds, accountSeries]);
+
+  const singleAccountWindowed = useMemo(() => {
+    if (!singleSelectedAccount) return null;
+    const cutoff = getWindowCutoff(historyWindow);
+    const pts = singleSelectedAccount.data;
+    return cutoff
+      ? pts.filter((p) => new Date(p.date + 'T00:00:00') >= cutoff)
+      : pts;
+  }, [singleSelectedAccount, historyWindow]);
+
   // ── Derived: main series (type-filtered, then window-filtered) ─────────────
   const filteredSeries = useMemo(() => {
     if (!data?.series) return [];
-    if (accountTypeFilter === 'all') return data.series;
-    // Extract the selected type's balance at each snapshot from accountTypeSeries.
+    if (viewMode === 'all' || viewMode === 'account' || accountTypeFilter === 'all') return data.series;
     return (data.accountTypeSeries || []).map((p) => ({
       date:  p.date,
       total: p[accountTypeFilter] || 0,
     }));
-  }, [data, accountTypeFilter]);
+  }, [data, viewMode, accountTypeFilter]);
 
   const windowedSeries = useMemo(
     () => filterSeriesByWindow(filteredSeries, historyWindow),
@@ -293,6 +384,7 @@ export default function Performance() {
   const benchTicker = benchmark !== 'None' ? benchmark : null;
 
   const chartData = useMemo(() => {
+    if (viewMode === 'account') return { mode: 'account', points: [] };
     if (!benchTicker || !benchmarkQuery.data?.series?.length || !windowedSeries.length) {
       return { mode: 'absolute', points: windowedSeries };
     }
@@ -303,9 +395,9 @@ export default function Performance() {
 
     if (!benchSlice.length) return { mode: 'absolute', points: windowedSeries };
 
-    const normBench  = normalizeTo100(benchSlice);
+    const normBench     = normalizeTo100(benchSlice);
     const normPortfolio = normalizeTo100(windowedSeries.map((p) => ({ date: p.date, value: p.total })));
-    const benchMap   = new Map(normBench.map((p) => [p.date, p.normalized]));
+    const benchMap      = new Map(normBench.map((p) => [p.date, p.normalized]));
 
     return {
       mode: 'normalized',
@@ -315,7 +407,7 @@ export default function Performance() {
         benchmark: benchMap.get(p.date) ?? null,
       })),
     };
-  }, [benchTicker, benchmarkQuery.data, windowedSeries]);
+  }, [viewMode, benchTicker, benchmarkQuery.data, windowedSeries]);
 
   // ── Derived: transfers in window (for reference lines) ─────────────────────
   const transfersInWindow = useMemo(() => {
@@ -341,10 +433,10 @@ export default function Performance() {
     [data?.accountTypeSeries, historyWindow]
   );
 
-  // ── Stats for selected window (always total-portfolio) ─────────────────────
-  const wStats = data?.windowStats?.[historyWindow] || {};
-  const twrColor      = wStats.twr   >= 0 ? 'text-emerald-400' : 'text-red-400';
-  const retColor      = wStats.simpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400';
+  // ── Stats for selected window ─────────────────────────────────────────────
+  const wStats      = data?.windowStats?.[historyWindow] || {};
+  const twrColor    = wStats.twr         >= 0 ? 'text-emerald-400' : 'text-red-400';
+  const retColor    = wStats.simpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400';
   const drawdownColor = 'text-red-400';
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -352,6 +444,18 @@ export default function Performance() {
   function monthLabel(m) { return m ? `${MONTH_NAMES[m.month - 1]} ${m.year}` : '—'; }
 
   const types = data?.types || [];
+
+  // ── Stat tiles for single-account "By Account" mode ─────────────────────────
+  const singleAcctCurrentValue = singleAccountWindowed?.length
+    ? singleAccountWindowed[singleAccountWindowed.length - 1].value
+    : null;
+  const singleAcctStartValue = singleAccountWindowed?.length
+    ? singleAccountWindowed[0].value
+    : null;
+  const singleAcctSimpleReturn =
+    singleAcctStartValue > 0 && singleAcctCurrentValue != null
+      ? (singleAcctCurrentValue - singleAcctStartValue) / singleAcctStartValue
+      : null;
 
   // ─────────────────────────────────────────────────────────────────────────────
   if (perfQuery.isLoading) {
@@ -436,90 +540,213 @@ export default function Performance() {
         </Card>
       ) : (
         <>
-          {/* Account type filter */}
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setAccountTypeFilter('all')}
-              className={`rounded-full px-3 py-1 text-sm font-medium ${
-                accountTypeFilter === 'all'
-                  ? 'bg-sky-500 text-white'
-                  : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
-              }`}
-            >
-              All Accounts
-            </button>
-            {ACCOUNT_TYPES.filter((t) => types.includes(t.value)).map((t) => (
-              <button
-                key={t.value}
-                type="button"
-                onClick={() => setAccountTypeFilter(t.value)}
-                className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ${
-                  accountTypeFilter === t.value
-                    ? 'text-white'
-                    : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
-                }`}
-                style={accountTypeFilter === t.value ? { background: t.color } : {}}
-              >
-                <span
-                  className="inline-block h-2 w-2 shrink-0 rounded-full"
-                  style={{ background: t.color }}
-                />
-                {t.label}
-              </button>
-            ))}
+          {/* ── View mode selector ─────────────────────────────────────────── */}
+          <div className="space-y-2">
+            {/* Level 1: All Accounts | By Type | By Account */}
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'all',     label: 'All Accounts' },
+                { id: 'type',    label: 'By Type',     hide: types.length < 2 },
+                { id: 'account', label: 'By Account',  hide: accountSeries.length === 0 },
+              ].filter((m) => !m.hide).map((mode) => (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => {
+                    setViewMode(mode.id);
+                    if (mode.id !== 'type') setAccountTypeFilter('all');
+                    if (mode.id !== 'account') setSelectedAccountIds(null);
+                  }}
+                  className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+                    viewMode === mode.id
+                      ? 'bg-sky-500 text-white'
+                      : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Level 2a: Type pills (By Type mode) */}
+            {viewMode === 'type' && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAccountTypeFilter('all')}
+                  className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+                    accountTypeFilter === 'all'
+                      ? 'bg-sky-500 text-white'
+                      : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  All Types
+                </button>
+                {ACCOUNT_TYPES.filter((t) => types.includes(t.value)).map((t) => (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setAccountTypeFilter(t.value)}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+                      accountTypeFilter === t.value
+                        ? 'text-white'
+                        : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                    style={accountTypeFilter === t.value ? { background: t.color } : {}}
+                  >
+                    <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: t.color }} />
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Level 2b: Account pills (By Account mode) */}
+            {viewMode === 'account' && accountSeries.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedAccountIds(null)}
+                  className={`rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+                    !selectedAccountIds
+                      ? 'bg-sky-500 text-white'
+                      : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
+                  }`}
+                >
+                  All
+                </button>
+                {accountSeries.map((acct, i) => {
+                  const color    = ACCOUNT_PALETTE[i % ACCOUNT_PALETTE.length];
+                  const selected = isAccountSelected(acct.accountId);
+                  return (
+                    <button
+                      key={acct.accountId}
+                      type="button"
+                      onClick={() => toggleAccount(acct.accountId)}
+                      className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium transition-colors ${
+                        selected
+                          ? 'text-white'
+                          : 'border border-slate-700 text-slate-400 hover:bg-slate-800 opacity-50'
+                      }`}
+                      style={selected ? { background: color } : {}}
+                      title={acct.accountName}
+                    >
+                      <span className="inline-block h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
+                      <span className="max-w-[160px] truncate">{shortAccountName(acct.accountName)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          {/* Stat tiles */}
+          {/* ── Stat tiles ─────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
-            <StatTile
-              label="TWR (transfer-adjusted)"
-              value={toPercent(wStats.twr)}
-              sub={`${wStats.snapshotCount || 0} snapshots`}
-              valueClass={wStats.twr != null ? twrColor : 'text-slate-500'}
-            />
-            <StatTile
-              label="Simple return"
-              value={toPercent(wStats.simpleReturn)}
-              sub="unadjusted"
-              valueClass={wStats.simpleReturn != null ? retColor : 'text-slate-500'}
-            />
-            <StatTile
-              label="Max drawdown (all time)"
-              value={data.drawdown?.maxDrawdown != null ? toPercent(data.drawdown.maxDrawdown) : '—'}
-              sub={data.drawdown?.troughDate ? `trough ${formatDate(data.drawdown.troughDate)}` : null}
-              valueClass={drawdownColor}
-            />
-            <StatTile
-              label="Best month"
-              value={data.bestMonth ? `${(data.bestMonth.return_decimal * 100).toFixed(1)}%` : '—'}
-              sub={monthLabel(data.bestMonth)}
-              valueClass="text-emerald-400"
-            />
-            <StatTile
-              label="Worst month"
-              value={data.worstMonth ? `${(data.worstMonth.return_decimal * 100).toFixed(1)}%` : '—'}
-              sub={monthLabel(data.worstMonth)}
-              valueClass="text-red-400"
-            />
+            {singleSelectedAccount ? (
+              // Single account selected in By Account mode: show account-specific stats.
+              <>
+                <StatTile
+                  label="Current value"
+                  value={singleAcctCurrentValue != null ? formatCurrency(singleAcctCurrentValue) : '—'}
+                  sub={singleSelectedAccount.accountName}
+                  valueClass="text-slate-100"
+                />
+                <StatTile
+                  label="Simple return (window)"
+                  value={toPercent(singleAcctSimpleReturn)}
+                  sub={HISTORY_WINDOWS.find((w) => w.id === historyWindow)?.label}
+                  valueClass={singleAcctSimpleReturn != null
+                    ? singleAcctSimpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400'
+                    : 'text-slate-500'}
+                />
+                <StatTile
+                  label="Data points"
+                  value={singleSelectedAccount.data.length}
+                  sub="daily NAV values"
+                  valueClass="text-slate-100"
+                />
+                <StatTile
+                  label="Start date"
+                  value={singleSelectedAccount.data[0]?.date
+                    ? formatDate(singleSelectedAccount.data[0].date)
+                    : '—'}
+                  sub="earliest history"
+                  valueClass="text-slate-100"
+                />
+                <StatTile
+                  label="Account type"
+                  value={typeLabel(singleSelectedAccount.accountType)}
+                  sub={singleSelectedAccount.accountType}
+                  valueClass="text-slate-100"
+                />
+              </>
+            ) : (
+              // Default: global portfolio stats.
+              <>
+                <StatTile
+                  label="TWR (transfer-adjusted)"
+                  value={toPercent(wStats.twr)}
+                  sub={`${wStats.snapshotCount || 0} snapshots`}
+                  valueClass={wStats.twr != null ? twrColor : 'text-slate-500'}
+                />
+                <StatTile
+                  label="Simple return"
+                  value={toPercent(wStats.simpleReturn)}
+                  sub="unadjusted"
+                  valueClass={wStats.simpleReturn != null ? retColor : 'text-slate-500'}
+                />
+                <StatTile
+                  label="Max drawdown (all time)"
+                  value={data.drawdown?.maxDrawdown != null ? toPercent(data.drawdown.maxDrawdown) : '—'}
+                  sub={data.drawdown?.troughDate ? `trough ${formatDate(data.drawdown.troughDate)}` : null}
+                  valueClass={drawdownColor}
+                />
+                <StatTile
+                  label="Best month"
+                  value={data.bestMonth ? `${(data.bestMonth.return_decimal * 100).toFixed(1)}%` : '—'}
+                  sub={monthLabel(data.bestMonth)}
+                  valueClass="text-emerald-400"
+                />
+                <StatTile
+                  label="Worst month"
+                  value={data.worstMonth ? `${(data.worstMonth.return_decimal * 100).toFixed(1)}%` : '—'}
+                  sub={monthLabel(data.worstMonth)}
+                  valueClass="text-red-400"
+                />
+              </>
+            )}
           </div>
 
-          {/* Portfolio value chart */}
+          {/* ── Portfolio value / per-account chart ────────────────────────── */}
           <Card>
-            {/* Window + benchmark controls */}
+            {/* Window controls (common to all modes) */}
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-xs text-slate-500">
-                  {accountTypeFilter === 'all' ? 'Total net worth' : typeLabel(accountTypeFilter)}
+                  {viewMode === 'account'
+                    ? singleSelectedAccount
+                      ? shortAccountName(singleSelectedAccount.accountName)
+                      : `${accountSeries.filter((a) => isAccountSelected(a.accountId)).length} accounts`
+                    : viewMode === 'type' && accountTypeFilter !== 'all'
+                    ? typeLabel(accountTypeFilter)
+                    : 'Total net worth'}
                 </p>
                 <p className="mt-1 font-mono text-2xl font-semibold text-slate-100">
-                  {windowedSeries.length
+                  {viewMode === 'account'
+                    ? singleAcctCurrentValue != null
+                      ? formatCurrency(singleAcctCurrentValue)
+                      : '—'
+                    : windowedSeries.length
                     ? formatCurrency(windowedSeries[windowedSeries.length - 1].total)
                     : '—'}
                 </p>
-                {windowedSeries.length >= 2 ? (
+                {viewMode !== 'account' && windowedSeries.length >= 2 ? (
                   <p className={`text-sm font-mono ${wStats.simpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                     {toPercent(wStats.simpleReturn)} simple · {toPercent(wStats.twr)} TWR
+                  </p>
+                ) : viewMode === 'account' && singleAcctSimpleReturn != null ? (
+                  <p className={`text-sm font-mono ${singleAcctSimpleReturn >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {toPercent(singleAcctSimpleReturn)} simple return
                   </p>
                 ) : null}
               </div>
@@ -541,155 +768,238 @@ export default function Performance() {
               </div>
             </div>
 
-            {/* Benchmark toggle */}
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <span className="text-xs text-slate-500">Benchmark:</span>
-              {BENCHMARKS.map((ticker) => (
-                <button
-                  key={ticker}
-                  type="button"
-                  onClick={() => setBenchmark(ticker)}
-                  className={`rounded px-2 py-1 text-xs font-medium ${
-                    benchmark === ticker
-                      ? 'bg-orange-500/20 text-orange-300'
-                      : 'border border-slate-700 text-slate-400 hover:bg-slate-800'
-                  }`}
-                >
-                  {ticker}
-                </button>
-              ))}
-              {benchTicker && benchmarkQuery.isLoading ? (
-                <span className="text-xs text-slate-500">Loading {benchmark}…</span>
-              ) : null}
-              {benchTicker && benchmarkQuery.isError ? (
-                <span className="text-xs text-red-400">Could not fetch {benchmark}</span>
-              ) : null}
-            </div>
-
-            {/* Chart */}
-            {windowedSeries.length < 2 ? (
-              <p className="py-12 text-center text-sm text-slate-400">
-                Not enough snapshots in this window.
-              </p>
-            ) : (
-              <div className="h-72 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  {chartData.mode === 'normalized' ? (
-                    <LineChart data={chartData.points}>
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
-                      <XAxis
-                        dataKey="date"
-                        tickFormatter={formatAxisDate}
-                        tick={{ fill: '#94a3b8', fontSize: 11 }}
-                        axisLine={{ stroke: '#334155' }}
-                        tickLine={false}
-                        minTickGap={32}
-                      />
-                      <YAxis
-                        tickFormatter={(v) => v.toFixed(0)}
-                        tick={{ fill: '#94a3b8', fontSize: 11 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={40}
-                      />
-                      <Tooltip
-                        content={
-                          <ChartTooltip
-                            labelFormatter={formatAxisDate}
-                            valueFormatter={(v, name) =>
-                              `${Number(v).toFixed(1)} (${name === 'portfolio' ? 'Portfolio' : benchmark})`
-                            }
-                          />
-                        }
-                        cursor={{ stroke: '#475569', strokeWidth: 1 }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="portfolio"
-                        name="Portfolio"
-                        stroke={SERIES_BLUE}
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="benchmark"
-                        name={benchmark}
-                        stroke="#f97316"
-                        strokeWidth={2}
-                        strokeDasharray="6 3"
-                        dot={false}
-                        connectNulls
-                        activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
-                      />
-                    </LineChart>
-                  ) : (
-                    <AreaChart data={chartData.points} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="perfFill" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%"   stopColor={SERIES_BLUE} stopOpacity={0.35} />
-                          <stop offset="100%" stopColor={SERIES_BLUE} stopOpacity={0.02} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="0" vertical={false} />
-                      <XAxis
-                        dataKey="date"
-                        tickFormatter={formatAxisDate}
-                        tick={{ fill: '#94a3b8', fontSize: 11 }}
-                        axisLine={{ stroke: '#334155' }}
-                        tickLine={false}
-                        minTickGap={40}
-                      />
-                      <YAxis
-                        tickFormatter={(v) => formatCurrency(v, { compact: true })}
-                        tick={{ fill: '#94a3b8', fontSize: 11 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={72}
-                      />
-                      <Tooltip
-                        content={
-                          <ChartTooltip
-                            labelFormatter={formatAxisDate}
-                            valueFormatter={(v) => formatCurrency(v)}
-                          />
-                        }
-                        cursor={{ stroke: '#475569', strokeWidth: 1 }}
-                      />
-                      {/* Transfer reference lines */}
-                      {transfersInWindow.map((t, i) => (
-                        <ReferenceLine
-                          key={`${t.date}-${i}`}
-                          x={t.date}
-                          stroke={t.amount >= 0 ? '#22c55e' : '#f59e0b'}
-                          strokeDasharray="4 4"
-                          label={{
-                            value: `${t.amount >= 0 ? '+' : ''}${formatCurrency(t.amount)}`,
-                            fill:  t.amount >= 0 ? '#22c55e' : '#f59e0b',
-                            fontSize: 10,
-                            position: 'insideTopRight',
-                          }}
-                        />
-                      ))}
-                      <Area
-                        type="monotone"
-                        dataKey="total"
-                        name={accountTypeFilter === 'all' ? 'Net worth' : typeLabel(accountTypeFilter)}
-                        stroke={accountTypeFilter === 'all' ? SERIES_BLUE : typeColor(accountTypeFilter)}
-                        strokeWidth={2}
-                        fill="url(#perfFill)"
-                        dot={false}
-                        activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
-                      />
-                    </AreaChart>
-                  )}
-                </ResponsiveContainer>
+            {/* Benchmark toggle — hidden in By Account mode */}
+            {viewMode !== 'account' && (
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-500">Benchmark:</span>
+                {BENCHMARKS.map((ticker) => (
+                  <button
+                    key={ticker}
+                    type="button"
+                    onClick={() => setBenchmark(ticker)}
+                    className={`rounded px-2 py-1 text-xs font-medium ${
+                      benchmark === ticker
+                        ? 'bg-orange-500/20 text-orange-300'
+                        : 'border border-slate-700 text-slate-400 hover:bg-slate-800'
+                    }`}
+                  >
+                    {ticker}
+                  </button>
+                ))}
+                {benchTicker && benchmarkQuery.isLoading ? (
+                  <span className="text-xs text-slate-500">Loading {benchmark}…</span>
+                ) : null}
+                {benchTicker && benchmarkQuery.isError ? (
+                  <span className="text-xs text-red-400">Could not fetch {benchmark}</span>
+                ) : null}
               </div>
+            )}
+
+            {/* ── Chart area ───────────────────────────────────────────────── */}
+            {viewMode === 'account' ? (
+              /* Per-account line chart */
+              accountChartData.length < 2 ? (
+                <p className="py-12 text-center text-sm text-slate-400">
+                  Not enough data in this window.
+                  {accountSeries.length > 0 && ' Try importing Composer history on the Import page.'}
+                </p>
+              ) : (
+                <>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={accountChartData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                        <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tickFormatter={formatAxisDate}
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                          axisLine={{ stroke: '#334155' }}
+                          tickLine={false}
+                          minTickGap={40}
+                        />
+                        <YAxis
+                          tickFormatter={(v) => formatCurrency(v, { compact: true })}
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={72}
+                        />
+                        <Tooltip
+                          content={
+                            <ChartTooltip
+                              labelFormatter={formatAxisDate}
+                              valueFormatter={(v) => formatCurrency(v)}
+                            />
+                          }
+                          cursor={{ stroke: '#475569', strokeWidth: 1 }}
+                        />
+                        {accountSeries
+                          .filter((a) => isAccountSelected(a.accountId))
+                          .map((acct, i) => (
+                            <Line
+                              key={acct.accountId}
+                              type="monotone"
+                              dataKey={acct.accountId}
+                              name={shortAccountName(acct.accountName)}
+                              stroke={ACCOUNT_PALETTE[i % ACCOUNT_PALETTE.length]}
+                              strokeWidth={2}
+                              dot={false}
+                              connectNulls
+                              activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
+                            />
+                          ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  {/* Legend */}
+                  <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+                    {accountSeries
+                      .filter((a) => isAccountSelected(a.accountId))
+                      .map((acct, i) => (
+                        <li key={acct.accountId} className="flex items-center gap-1.5">
+                          <span
+                            className="inline-block h-2 w-2 shrink-0 rounded-full"
+                            style={{ background: ACCOUNT_PALETTE[i % ACCOUNT_PALETTE.length] }}
+                          />
+                          <span className="text-slate-400">{shortAccountName(acct.accountName)}</span>
+                          <span className="text-slate-600">
+                            {acct.data.length} pts
+                          </span>
+                        </li>
+                      ))}
+                  </ul>
+                </>
+              )
+            ) : (
+              /* Aggregate / type-filtered chart (existing behavior) */
+              windowedSeries.length < 2 ? (
+                <p className="py-12 text-center text-sm text-slate-400">
+                  Not enough snapshots in this window.
+                </p>
+              ) : (
+                <div className="h-72 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    {chartData.mode === 'normalized' ? (
+                      <LineChart data={chartData.points}>
+                        <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tickFormatter={formatAxisDate}
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                          axisLine={{ stroke: '#334155' }}
+                          tickLine={false}
+                          minTickGap={32}
+                        />
+                        <YAxis
+                          tickFormatter={(v) => v.toFixed(0)}
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={40}
+                        />
+                        <Tooltip
+                          content={
+                            <ChartTooltip
+                              labelFormatter={formatAxisDate}
+                              valueFormatter={(v, name) =>
+                                `${Number(v).toFixed(1)} (${name === 'portfolio' ? 'Portfolio' : benchmark})`
+                              }
+                            />
+                          }
+                          cursor={{ stroke: '#475569', strokeWidth: 1 }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="portfolio"
+                          name="Portfolio"
+                          stroke={SERIES_BLUE}
+                          strokeWidth={2}
+                          dot={false}
+                          activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="benchmark"
+                          name={benchmark}
+                          stroke="#f97316"
+                          strokeWidth={2}
+                          strokeDasharray="6 3"
+                          dot={false}
+                          connectNulls
+                          activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
+                        />
+                      </LineChart>
+                    ) : (
+                      <AreaChart data={chartData.points} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="perfFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%"   stopColor={SERIES_BLUE} stopOpacity={0.35} />
+                            <stop offset="100%" stopColor={SERIES_BLUE} stopOpacity={0.02} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid stroke="#1e293b" strokeDasharray="0" vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tickFormatter={formatAxisDate}
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                          axisLine={{ stroke: '#334155' }}
+                          tickLine={false}
+                          minTickGap={40}
+                        />
+                        <YAxis
+                          tickFormatter={(v) => formatCurrency(v, { compact: true })}
+                          tick={{ fill: '#94a3b8', fontSize: 11 }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={72}
+                        />
+                        <Tooltip
+                          content={
+                            <ChartTooltip
+                              labelFormatter={formatAxisDate}
+                              valueFormatter={(v) => formatCurrency(v)}
+                            />
+                          }
+                          cursor={{ stroke: '#475569', strokeWidth: 1 }}
+                        />
+                        {/* Transfer reference lines */}
+                        {transfersInWindow.map((t, i) => (
+                          <ReferenceLine
+                            key={`${t.date}-${i}`}
+                            x={t.date}
+                            stroke={t.amount >= 0 ? '#22c55e' : '#f59e0b'}
+                            strokeDasharray="4 4"
+                            label={{
+                              value: `${t.amount >= 0 ? '+' : ''}${formatCurrency(t.amount)}`,
+                              fill:  t.amount >= 0 ? '#22c55e' : '#f59e0b',
+                              fontSize: 10,
+                              position: 'insideTopRight',
+                            }}
+                          />
+                        ))}
+                        <Area
+                          type="monotone"
+                          dataKey="total"
+                          name={viewMode === 'type' && accountTypeFilter !== 'all'
+                            ? typeLabel(accountTypeFilter)
+                            : 'Net worth'}
+                          stroke={viewMode === 'type' && accountTypeFilter !== 'all'
+                            ? typeColor(accountTypeFilter)
+                            : SERIES_BLUE}
+                          strokeWidth={2}
+                          fill="url(#perfFill)"
+                          dot={false}
+                          activeDot={{ r: 4, stroke: CARD_SURFACE, strokeWidth: 2 }}
+                        />
+                      </AreaChart>
+                    )}
+                  </ResponsiveContainer>
+                </div>
+              )
             )}
           </Card>
 
-          {/* Stacked area by account type */}
+          {/* ── Stacked area by account type ─────────────────────────────── */}
           {types.length > 1 ? (
             <Card>
               <h3 className="mb-4 text-lg font-semibold">Allocation Over Time</h3>
@@ -744,7 +1054,6 @@ export default function Performance() {
                   </ResponsiveContainer>
                 </div>
               )}
-              {/* Legend */}
               <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs">
                 {types.map((type) => (
                   <li key={type} className="flex items-center gap-1.5">
@@ -756,7 +1065,7 @@ export default function Performance() {
             </Card>
           ) : null}
 
-          {/* Monthly return heatmap */}
+          {/* ── Monthly return heatmap ────────────────────────────────────── */}
           <Card>
             <h3 className="mb-4 text-lg font-semibold">Monthly Return Heatmap</h3>
             <p className="mb-3 text-xs text-slate-500">
@@ -765,7 +1074,7 @@ export default function Performance() {
             <MonthlyHeatmap data={data?.monthlyReturns} isLoading={perfQuery.isLoading} />
           </Card>
 
-          {/* Drawdown chart */}
+          {/* ── Drawdown chart ────────────────────────────────────────────── */}
           <Card>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-lg font-semibold">Drawdown</h3>
@@ -787,7 +1096,6 @@ export default function Performance() {
               </div>
             </div>
 
-            {/* Drawdown metadata */}
             <div className="mb-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
               <div>
                 <p className="text-xs text-slate-500">Max Drawdown</p>

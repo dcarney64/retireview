@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import { requireAuth } from '../auth/middleware.js';
 import { query } from '../db/client.js';
+import { backfillPortfolioHistory } from '../services/composerService.js';
 import { reconstructHistoryForUser } from '../services/historyReconstructService.js';
 
 const router = Router();
@@ -219,9 +220,10 @@ function computeWindowStats(allSeries, allTransfers) {
  * GET /api/performance
  *
  * Returns everything the Performance page needs in a single call:
- *   series            – [{date, total}] all snapshots, chronological
- *   accountTypeSeries – [{date, brokerage, retirement, ...}] per-type stacked
+ *   series            – [{date, total}] merged daily series (Composer ph + forward-filled others)
+ *   accountTypeSeries – [{date, brokerage, retirement, ...}] per-type stacked (snapshot-based)
  *   types             – ordered list of type keys present in the data
+ *   accountSeries     – [{accountId, accountName, accountType, data:[{date,value}]}] per account
  *   monthlyReturns    – [{year, month, return_decimal, value_start, value_end}]
  *   drawdown          – { series, maxDrawdown, peakDate, troughDate }
  *   transfers         – [{date, amount, transfer_type, account_name}]
@@ -233,58 +235,88 @@ router.get('/', requireAuth, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        const [snapshotsResult, transfersResult] = await Promise.all([
-            query(
-                `SELECT s.snapped_at::text AS date,
-                        s.total,
-                        COALESCE(
-                            json_agg(
-                                json_build_object('type', a.type, 'balance', asn.balance)
-                                ORDER BY a.type
-                            ) FILTER (WHERE asn.id IS NOT NULL),
-                            '[]'
-                        ) AS accounts
-                 FROM snapshots s
-                 LEFT JOIN account_snapshots asn ON asn.snapshot_id = s.id
-                 LEFT JOIN accounts a            ON a.id = asn.account_id
-                 WHERE s.user_id = $1
-                 GROUP BY s.id, s.snapped_at, s.total
-                 ORDER BY s.snapped_at ASC`,
-                [userId]
-            ),
-            query(
-                `SELECT t.id,
-                        t.account_id,
-                        t.amount,
-                        t.transfer_type,
-                        t.transferred_at::text AS transferred_at,
-                        t.notes,
-                        a.name AS account_name,
-                        a.type AS account_type
-                 FROM account_transfers t
-                 JOIN accounts a ON a.id = t.account_id
-                 WHERE t.user_id = $1
-                 ORDER BY t.transferred_at ASC`,
-                [userId]
-            ),
-        ]);
+        const [snapshotsResult, transfersResult, composerHistResult, nonComposerSnapsResult] =
+            await Promise.all([
+                // ── Aggregate snapshots (for accountTypeSeries + fallback series) ──
+                query(
+                    `SELECT s.snapped_at::text AS date,
+                            s.total,
+                            COALESCE(
+                                json_agg(
+                                    json_build_object('type', a.type, 'balance', asn.balance)
+                                    ORDER BY a.type
+                                ) FILTER (WHERE asn.id IS NOT NULL),
+                                '[]'
+                            ) AS accounts
+                     FROM snapshots s
+                     LEFT JOIN account_snapshots asn ON asn.snapshot_id = s.id
+                     LEFT JOIN accounts a            ON a.id = asn.account_id
+                     WHERE s.user_id = $1
+                     GROUP BY s.id, s.snapped_at, s.total
+                     ORDER BY s.snapped_at ASC`,
+                    [userId]
+                ),
+                // ── Transfers for TWR ──────────────────────────────────────────────
+                query(
+                    `SELECT t.id,
+                            t.account_id,
+                            t.amount,
+                            t.transfer_type,
+                            t.transferred_at::text AS transferred_at,
+                            t.notes,
+                            a.name AS account_name,
+                            a.type AS account_type
+                     FROM account_transfers t
+                     JOIN accounts a ON a.id = t.account_id
+                     WHERE t.user_id = $1
+                     ORDER BY t.transferred_at ASC`,
+                    [userId]
+                ),
+                // ── Composer daily NAV from portfolio_history ──────────────────────
+                query(
+                    `SELECT ph.history_date::text AS date,
+                            ph.account_id::text   AS account_id,
+                            a.name                AS account_name,
+                            ph.portfolio_value::float AS value
+                     FROM portfolio_history ph
+                     JOIN accounts a ON a.id = ph.account_id
+                     WHERE ph.user_id = $1
+                       AND a.include_in_tracking = true
+                     ORDER BY ph.history_date ASC, a.name ASC`,
+                    [userId]
+                ),
+                // ── Non-Composer per-account snapshot balances ─────────────────────
+                query(
+                    `SELECT s.snapped_at::text   AS date,
+                            asn.account_id::text AS account_id,
+                            a.name               AS account_name,
+                            a.type               AS account_type,
+                            asn.balance::float   AS balance
+                     FROM snapshots s
+                     JOIN account_snapshots asn ON asn.snapshot_id = s.id
+                     JOIN accounts a            ON a.id = asn.account_id
+                     WHERE s.user_id = $1
+                       AND a.source != 'composer'
+                       AND a.include_in_tracking = true
+                     ORDER BY s.snapped_at ASC, a.name ASC`,
+                    [userId]
+                ),
+            ]);
 
-        const snapshots = snapshotsResult.rows;
-        const transfers = transfersResult.rows;
+        const snapshots           = snapshotsResult.rows;
+        const transfers           = transfersResult.rows;
+        const composerHistRows    = composerHistResult.rows;    // [{date, account_id, account_name, value}]
+        const nonComposerSnapRows = nonComposerSnapsResult.rows; // [{date, account_id, account_name, account_type, balance}]
 
-        // Main series (total net worth over time).
-        const series = snapshots.map((s) => ({ date: s.date, total: toNum(s.total) }));
+        // ── accountTypeSeries + types (from aggregate snapshots, unchanged) ───────
 
-        // Determine which account types appear across all snapshots.
         const typeSet = new Set();
         for (const s of snapshots) {
             for (const a of (s.accounts || [])) typeSet.add(a.type);
         }
-        // Preserve the canonical display order from the DB enum.
         const TYPE_ORDER = ['brokerage', 'composer', 'retirement', 'pension', 'real_estate', 'cash', 'other'];
         const types = TYPE_ORDER.filter((t) => typeSet.has(t));
 
-        // Per-type stacked series.
         const accountTypeSeries = snapshots.map((s) => {
             const point = { date: s.date };
             const acctMap = {};
@@ -297,15 +329,122 @@ router.get('/', requireAuth, async (req, res) => {
             return point;
         });
 
-        // Computed metrics.
+        // ── Main series: merged daily (portfolio_history) + forward-fill others ──
+        //
+        // Strategy:
+        //   • If portfolio_history has data (post-backfill): build a daily series
+        //     where Composer values come from portfolio_history and non-Composer values
+        //     are forward-filled from their account_snapshots.
+        //   • Otherwise: fall back to the existing snapshot-based series so the page
+        //     works correctly even before a backfill has run.
+
+        let series;
+
+        if (composerHistRows.length > 0) {
+            // Build date → summed Composer value map.
+            const composerByDate = new Map();
+            for (const row of composerHistRows) {
+                composerByDate.set(row.date, (composerByDate.get(row.date) || 0) + toNum(row.value));
+            }
+
+            // Build per non-Composer account: sorted [{date, balance}] for forward-fill.
+            const nonComposerAccts = new Map(); // account_id → { type, dates[] }
+            for (const row of nonComposerSnapRows) {
+                if (!nonComposerAccts.has(row.account_id)) {
+                    nonComposerAccts.set(row.account_id, { type: row.account_type, dates: [] });
+                }
+                nonComposerAccts.get(row.account_id).dates.push({
+                    date: row.date, balance: toNum(row.balance),
+                });
+            }
+            // dates are already sorted ASC from the query.
+
+            // Forward-fill helper: last known balance on or before targetDate.
+            function forwardFill(sortedDates, targetDate) {
+                let last = 0;
+                for (const { date, balance } of sortedDates) {
+                    if (date <= targetDate) last = balance;
+                    else break;
+                }
+                return last;
+            }
+
+            // Union of all dates from both sources.
+            const allDateSet = new Set(composerByDate.keys());
+            for (const { dates } of nonComposerAccts.values()) {
+                for (const { date } of dates) allDateSet.add(date);
+            }
+            const sortedDates = [...allDateSet].sort();
+
+            // Build the merged series, forward-filling BOTH Composer and non-Composer
+            // totals across dates that only appear in the other source.
+            let lastComposerTotal = 0;
+            series = sortedDates.map((date) => {
+                // Update the running Composer total when this date has portfolio_history.
+                if (composerByDate.has(date)) {
+                    lastComposerTotal = composerByDate.get(date);
+                }
+                // Use the last known Composer total (forward-fill for non-ph dates).
+                const composerTotal = lastComposerTotal;
+
+                let nonComposerTotal = 0;
+                for (const { dates } of nonComposerAccts.values()) {
+                    nonComposerTotal += forwardFill(dates, date);
+                }
+                return { date, total: composerTotal + nonComposerTotal };
+            });
+        } else {
+            // No portfolio_history yet → use aggregate snapshots as before.
+            series = snapshots.map((s) => ({ date: s.date, total: toNum(s.total) }));
+        }
+
+        // ── Per-account series for the "By Account" chart ─────────────────────────
+
+        // Composer accounts: from portfolio_history (daily).
+        const composerAcctMap = new Map(); // account_id → { name, data[] }
+        for (const row of composerHistRows) {
+            if (!composerAcctMap.has(row.account_id)) {
+                composerAcctMap.set(row.account_id, { name: row.account_name, data: [] });
+            }
+            composerAcctMap.get(row.account_id).data.push({ date: row.date, value: toNum(row.value) });
+        }
+
+        // Non-Composer accounts: from account_snapshots (sparse).
+        const nonComposerAcctMap = new Map(); // account_id → { name, type, data[] }
+        for (const row of nonComposerSnapRows) {
+            if (!nonComposerAcctMap.has(row.account_id)) {
+                nonComposerAcctMap.set(row.account_id, {
+                    name: row.account_name, type: row.account_type, data: [],
+                });
+            }
+            nonComposerAcctMap.get(row.account_id).data.push({ date: row.date, value: toNum(row.balance) });
+        }
+
+        const accountSeries = [
+            ...Array.from(composerAcctMap.entries()).map(([accountId, acct]) => ({
+                accountId,
+                accountName: acct.name,
+                accountType: 'composer',
+                data:        acct.data,
+            })),
+            ...Array.from(nonComposerAcctMap.entries()).map(([accountId, acct]) => ({
+                accountId,
+                accountName: acct.name,
+                accountType: acct.type,
+                data:        acct.data,
+            })),
+        ];
+
+        // ── Computed metrics ──────────────────────────────────────────────────────
+
         const drawdownResult = computeDrawdown(series);
         const monthlyReturns = computeMonthlyReturns(series, transfers);
         const windowStats    = computeWindowStats(series, transfers);
 
-        let bestMonth = null;
+        let bestMonth  = null;
         let worstMonth = null;
         for (const m of monthlyReturns) {
-            if (bestMonth === null || m.return_decimal > bestMonth.return_decimal) bestMonth = m;
+            if (bestMonth  === null || m.return_decimal > bestMonth.return_decimal)  bestMonth  = m;
             if (worstMonth === null || m.return_decimal < worstMonth.return_decimal) worstMonth = m;
         }
 
@@ -313,6 +452,7 @@ router.get('/', requireAuth, async (req, res) => {
             series,
             accountTypeSeries,
             types,
+            accountSeries,
             monthlyReturns,
             drawdown: {
                 series:      drawdownResult.series,
@@ -392,6 +532,28 @@ router.post('/reconstruct-history', requireAuth, async (req, res) => {
         return res.json(result);
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Reconstruction failed' });
+    }
+});
+
+/**
+ * POST /api/performance/backfill-composer
+ *
+ * Pulls complete daily NAV history from the Composer API for every Composer
+ * account belonging to the authenticated user, then bulk-inserts the rows into
+ * portfolio_history (ON CONFLICT DO UPDATE so it is safe to re-run).
+ *
+ * Returns {
+ *   accountsProcessed, rowsInserted,
+ *   accounts: [{ name, pointCount, earliest, latest }],
+ *   dateRange: { earliest, latest }
+ * }
+ */
+router.post('/backfill-composer', requireAuth, async (req, res) => {
+    try {
+        const result = await backfillPortfolioHistory(req.user.id);
+        return res.json(result);
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Composer backfill failed' });
     }
 });
 
