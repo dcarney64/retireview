@@ -1,10 +1,10 @@
 import {
   Briefcase,
   Building2,
-  DollarSign,
   LayoutDashboard,
   LineChart,
   Receipt,
+  RefreshCw,
   Target,
   TrendingUp,
   Upload,
@@ -23,8 +23,8 @@ const mainItems = [
   { label: 'Accounts',     path: '/accounts',     icon: Wallet          },
   { label: 'Import Data',  path: '/import',       icon: Upload          },
   { label: 'Retirement',   path: '/retirement',   icon: Target          },
+  { label: 'Income',       path: '/income',       icon: RefreshCw       },
   { label: 'Tax Planning', path: '/tax-planning', icon: Receipt         },
-  { label: 'Income',       path: '/income',       icon: DollarSign      },
 ];
 
 const adminItems = [

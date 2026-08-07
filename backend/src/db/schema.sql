@@ -727,3 +727,54 @@ CREATE INDEX IF NOT EXISTS idx_other_assets_profile   ON other_assets(profile_id
 CREATE INDEX IF NOT EXISTS idx_scenarios_profile      ON retirement_scenarios(profile_id);
 CREATE INDEX IF NOT EXISTS idx_snapshots_profile      ON snapshots(profile_id);
 CREATE INDEX IF NOT EXISTS idx_income_profile         ON income_events(profile_id);
+
+-- ============================================================
+-- RECURRING INCOME — persistent income streams (SS, pension,
+-- employment, rental, annuity, etc.) used by the retirement
+-- projection engine and the Income page.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS recurring_income (
+  id                    SERIAL PRIMARY KEY,
+  user_id               UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  profile_id            INTEGER REFERENCES profiles(id) ON DELETE CASCADE,
+  name                  TEXT NOT NULL,
+  income_type           TEXT NOT NULL DEFAULT 'other'
+                        CHECK (income_type IN (
+                          'social_security','pension','annuity',
+                          'rental','employment','other')),
+
+  monthly_amount        NUMERIC(15,2) NOT NULL DEFAULT 0,
+
+  -- When does this income start?
+  start_type            TEXT NOT NULL DEFAULT 'age'
+                        CHECK (start_type IN ('now','age','date')),
+  start_age             INTEGER,          -- used when start_type = 'age'
+  start_date            DATE,             -- used when start_type = 'date'
+
+  -- When does it end?
+  end_type              TEXT NOT NULL DEFAULT 'lifetime'
+                        CHECK (end_type IN ('lifetime','age','date','years')),
+  end_age               INTEGER,          -- used when end_type = 'age'
+  end_date              DATE,             -- used when end_type = 'date'
+  end_years             INTEGER,          -- used when end_type = 'years' (certain period)
+
+  -- Growth / COLA
+  is_inflation_adjusted BOOLEAN NOT NULL DEFAULT false,
+  annual_increase_pct   NUMERIC(5,2) NOT NULL DEFAULT 0,
+  -- 0 = fixed nominal; 2.5 = COLA; etc.
+
+  -- Tax character
+  tax_treatment         TEXT NOT NULL DEFAULT 'taxable'
+                        CHECK (tax_treatment IN ('taxable','tax_deferred','tax_free')),
+
+  -- What-if toggle (exclude from projections without deleting)
+  is_active             BOOLEAN NOT NULL DEFAULT true,
+
+  notes                 TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_recurring_income_user    ON recurring_income(user_id);
+CREATE INDEX IF NOT EXISTS idx_recurring_income_profile ON recurring_income(profile_id);
