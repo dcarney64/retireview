@@ -7,6 +7,10 @@
 //   authorization:  Bearer <COMPOSER_API_SECRET>
 //
 // Rate limit: 1 req/sec on most endpoints.
+//
+// /accounts/list returns account_uuid, account_type, account_number — no name or balance.
+// Balance lives in /portfolio/accounts/{id}/total-stats → portfolio_value.
+// We fetch stats sequentially to stay within the 1 req/sec rate limit.
 
 import { query } from '../db/client.js';
 import { decryptSecret } from '../lib/secretCrypto.js';
@@ -30,14 +34,32 @@ async function composerFetch(path, apiKeyId, apiSecret, method = 'GET', body) {
     return fetch(`${COMPOSER_API_BASE}${path}`, options);
 }
 
+// Maps Composer account_type to a human-readable label.
+function formatAccountName(accountType, accountNumber) {
+    const typeLabel = {
+        INDIVIDUAL:      'Individual Brokerage',
+        TRADITIONAL_IRA: 'Traditional IRA',
+        ROTH_IRA:        'Roth IRA',
+        JOINT:           'Joint Account',
+        CUSTODIAL:       'Custodial Account',
+        SEP_IRA:         'SEP IRA',
+        SIMPLE_IRA:      'SIMPLE IRA',
+    }[accountType] ?? (accountType ? accountType.replace(/_/g, ' ') : 'Account');
+
+    return accountNumber ? `${typeLabel} · ${accountNumber}` : typeLabel;
+}
+
 // ─── Connection test ──────────────────────────────────────────────────────────
 
+// Fast auth check — only hits /accounts/list, does not fetch balances.
 // Returns { success, error? }
 export async function testConnection(apiKeyId, apiSecret) {
     try {
         const response = await composerFetch('/api/v0.1/accounts/list', apiKeyId, apiSecret);
         if (response.ok) {
-            return { success: true };
+            const data = await response.json();
+            const raw = Array.isArray(data) ? data : (data.accounts ?? []);
+            return { success: true, accountCount: raw.length };
         }
         const text = await response.text().catch(() => '');
         return { success: false, error: `HTTP ${response.status}${text ? ': ' + text : ''}` };
@@ -46,29 +68,56 @@ export async function testConnection(apiKeyId, apiSecret) {
     }
 }
 
-// ─── Accounts list ────────────────────────────────────────────────────────────
+// ─── Accounts list (with balances) ───────────────────────────────────────────
 
-// GET /api/v0.1/accounts/list
-// Returns [{ composerAccountId, name, value, currency, type, status }]
-// Also exported as fetchComposerAccounts for backward-compat with connections route.
+// GET /api/v0.1/accounts/list  +  GET /api/v0.1/portfolio/accounts/{id}/total-stats
+//
+// The list endpoint returns metadata only (no balance). We fetch total-stats
+// for each account sequentially to stay within the 1 req/sec rate limit.
+//
+// Returns [{ id, name, value, currency, type, status }]
 export async function fetchComposerAccounts(apiKeyId, apiSecret) {
-    const response = await composerFetch('/api/v0.1/accounts/list', apiKeyId, apiSecret);
-    if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        throw new Error(`Composer API error ${response.status}${text ? ': ' + text : ''}`);
+    const listResp = await composerFetch('/api/v0.1/accounts/list', apiKeyId, apiSecret);
+    if (!listResp.ok) {
+        const text = await listResp.text().catch(() => '');
+        throw new Error(`Composer API error ${listResp.status}${text ? ': ' + text : ''}`);
     }
-    const data = await response.json();
+    const listData = await listResp.json();
+    const raw = Array.isArray(listData) ? listData : (listData.accounts ?? listData.data ?? []);
 
-    // Response shape: { accounts: [...] } or bare array
-    const raw = Array.isArray(data) ? data : (data.accounts ?? data.data ?? []);
-    return raw.map((a) => ({
-        composerAccountId: String(a.account_uuid ?? a.id ?? ''),
-        name: a.account_name ?? a.name ?? `Account ${a.account_uuid ?? ''}`,
-        value: parseFloat(a.equity ?? a.portfolio_value ?? a.value ?? a.balance ?? 0),
-        currency: a.currency ?? 'USD',
-        type: a.account_type ?? a.type ?? null,
-        status: a.status ?? null,
-    }));
+    const accounts = [];
+    for (const a of raw) {
+        const id   = String(a.account_uuid ?? a.id ?? '');
+        const name = formatAccountName(a.account_type, a.account_number);
+
+        let value = 0;
+        try {
+            const statsResp = await composerFetch(
+                `/api/v0.1/portfolio/accounts/${id}/total-stats`,
+                apiKeyId,
+                apiSecret
+            );
+            if (statsResp.ok) {
+                const stats = await statsResp.json();
+                value = parseFloat(stats.portfolio_value ?? 0);
+            } else {
+                console.warn(`[composer] total-stats ${statsResp.status} for ${id}`);
+            }
+        } catch (err) {
+            console.warn(`[composer] Could not fetch stats for ${id}:`, err.message);
+        }
+
+        accounts.push({
+            id,
+            name,
+            value,
+            currency: 'USD',
+            type:     a.account_type ?? null,
+            status:   a.status ?? null,
+        });
+    }
+
+    return accounts;
 }
 
 // ─── Account holdings ─────────────────────────────────────────────────────────
@@ -150,7 +199,8 @@ export async function fetchActivityReports(accountId, apiKeyId, apiSecret, optio
 // ─── DB sync ──────────────────────────────────────────────────────────────────
 
 // Syncs balances for all Composer accounts for a user.
-// Reads credentials from composer_credentials; updates matching rows in accounts.
+// Reads credentials from composer_credentials; upserts into accounts using external_id.
+// On INSERT: sets name from Composer (account type + number). On UPDATE: balance only.
 // Returns { accountsUpdated }.
 export async function syncComposerAccountsForUser(userId) {
     const credResult = await query(
@@ -169,10 +219,6 @@ export async function syncComposerAccountsForUser(userId) {
     let accountsUpdated = 0;
 
     for (const ca of composerAccounts) {
-        const name       = ca.name;
-        const balance    = ca.value;
-        const externalId = ca.composerAccountId || name;
-
         await query(
             `INSERT INTO accounts
                (user_id, name, type, balance, source, external_id, institution, last_synced_at, updated_at)
@@ -182,7 +228,7 @@ export async function syncComposerAccountsForUser(userId) {
                balance        = EXCLUDED.balance,
                last_synced_at = NOW(),
                updated_at     = NOW()`,
-            [userId, name, balance, externalId]
+            [userId, ca.name, ca.value, ca.id]
         );
         accountsUpdated++;
     }
@@ -192,7 +238,7 @@ export async function syncComposerAccountsForUser(userId) {
         [userId]
     );
 
-    // Auto-snapshot after every sync (manual and nightly).
+    // Auto-snapshot after every sync.
     try {
         await takeSnapshot(userId, 'auto: composer sync');
     } catch (snapErr) {

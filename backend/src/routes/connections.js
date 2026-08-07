@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { requireAuth } from '../auth/middleware.js';
 import { query } from '../db/client.js';
 import { decryptSecret, encryptSecret } from '../lib/secretCrypto.js';
-import { fetchComposerAccounts, syncComposerAccountsForUser } from '../services/composerService.js';
+import { fetchComposerAccounts, syncComposerAccountsForUser, testConnection } from '../services/composerService.js';
 
 const router = Router();
 
@@ -117,13 +117,14 @@ router.post('/composer/test', requireAuth, async (req, res) => {
                 return res.status(404).json({ success: false, error: 'No credentials stored' });
             }
 
-            const { decryptSecret } = await import('../lib/secretCrypto.js');
             keyId     = credResult.rows[0].key_id;
             keySecret = decryptSecret(credResult.rows[0].key_secret_enc);
         }
 
-        const accounts = await fetchComposerAccounts(keyId, keySecret);
-        return res.json({ success: true, accountCount: accounts.length });
+        // Use testConnection (fast, list-only) — not fetchComposerAccounts which
+        // fetches per-account balance stats and would be slow for a connectivity check.
+        const result = await testConnection(keyId, keySecret);
+        return res.json(result);
     } catch (error) {
         // Return 200 with success:false so the UI can show the error message cleanly
         return res.json({ success: false, error: String(error.message).split('\n')[0] });
@@ -145,12 +146,8 @@ router.get('/composer/accounts', requireAuth, async (req, res) => {
         }
 
         const { key_id, key_secret_enc } = credResult.rows[0];
-        const raw = await fetchComposerAccounts(key_id, decryptSecret(key_secret_enc));
-        const accounts = raw.map((a) => ({
-            id:    String(a.id ?? a.account_id ?? a.name ?? ''),
-            name:  a.name || a.title || a.label || 'Unnamed Portfolio',
-            value: Number(a.balance ?? a.portfolio_value ?? a.total_value ?? a.nav ?? 0),
-        }));
+        // fetchComposerAccounts returns [{ id, name, value, currency, type, status }]
+        const accounts = await fetchComposerAccounts(key_id, decryptSecret(key_secret_enc));
         return res.json({ accounts });
     } catch (error) {
         return res.status(502).json({ error: String(error.message).split('\n')[0] });
