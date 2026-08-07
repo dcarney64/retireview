@@ -8,6 +8,92 @@ const router = Router();
 
 const WITHDRAWAL_TYPES = ['percentage', 'fixed', 'income_gap'];
 
+// ─── Recurring-income helpers (shared with /api/recurring-income) ─────────────
+
+/**
+ * Age at which a recurring income source begins paying.
+ * Returns 0 for 'now' (already active), null for date-only sources (caller
+ * should compare projectionYear against start_date).
+ */
+function srcStartAge(src) {
+    if (src.start_type === 'now')  return 0;
+    if (src.start_type === 'age')  return Number(src.start_age) || 0;
+    return null; // 'date' — handled separately
+}
+
+/**
+ * Age at which a recurring income source stops.  Null = lifetime.
+ */
+function srcEndAge(src, startAge) {
+    if (src.end_type === 'lifetime') return null;
+    if (src.end_type === 'age')      return Number(src.end_age)  || null;
+    if (src.end_type === 'years')    return startAge != null ? startAge + (Number(src.end_years) || 0) : null;
+    return null; // 'date' — handled separately
+}
+
+/**
+ * True when `src` is paying at `age` in `projectionYear`.
+ * currentAge is used to resolve 'now' start type.
+ */
+function isSrcActiveAtAge(src, age, currentAge, projectionYear) {
+    const sa = srcStartAge(src);
+
+    // — start gate —
+    if (src.start_type === 'date' && src.start_date) {
+        if (projectionYear < new Date(src.start_date).getFullYear()) return false;
+    } else {
+        const effectiveStart = sa ?? 0;
+        if (age < effectiveStart) return false;
+    }
+
+    // — end gate —
+    const effectiveStartAge = sa ?? currentAge;
+    const ea = srcEndAge(src, effectiveStartAge);
+
+    if (src.end_type === 'date' && src.end_date) {
+        if (projectionYear >= new Date(src.end_date).getFullYear()) return false;
+    } else if (ea !== null && age >= ea) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Monthly amount for `src` at `age`, compounding annual_increase_pct
+ * from the source's effective start age.
+ */
+function srcMonthlyAtAge(src, age, currentAge) {
+    const base    = Number(src.monthly_amount) || 0;
+    const growPct = Number(src.annual_increase_pct) || 0;
+    if (!growPct) return base;
+    const sa           = srcStartAge(src);
+    const effectiveStart = sa ?? currentAge;
+    const years          = Math.max(0, age - effectiveStart);
+    return base * Math.pow(1 + growPct / 100, years);
+}
+
+/**
+ * Sum all active recurring income sources at a given age.
+ * Returns { annual, breakdown: [{name, type, monthly}] }.
+ */
+function recurringAt(sources, age, currentAge, projectionYear) {
+    let annual = 0;
+    const breakdown = [];
+    for (const src of sources) {
+        if (!isSrcActiveAtAge(src, age, currentAge, projectionYear)) continue;
+        const monthly = srcMonthlyAtAge(src, age, currentAge);
+        annual += monthly * 12;
+        breakdown.push({
+            id:      src.id,
+            name:    src.name,
+            type:    src.income_type,
+            monthly: Math.round(monthly * 100) / 100,
+        });
+    }
+    return { annual, breakdown };
+}
+
 const SCENARIO_COLUMNS = `
     id, name, is_active, color, current_age, retirement_age, life_expectancy,
     starting_portfolio, include_real_estate, real_estate_value,
@@ -47,7 +133,11 @@ async function liquidPortfolioTotal(userId, profileId = null) {
 // Exported for the email digest service.
 //
 // otherAssets: optional array of other_assets rows for business income / sale proceeds
-export function computeProjection(scenario, currentYear, otherAssets = []) {
+// recurringIncomeSources: optional array of recurring_income rows.
+//   When non-empty, guaranteed income is computed from those rows instead of
+//   the scenario's social_security_monthly / pension_monthly / etc. fields.
+//   Falls back to scenario fields when the array is empty (backward compat).
+export function computeProjection(scenario, currentYear, otherAssets = [], recurringIncomeSources = []) {
     const currentAge = Number(scenario.current_age) || 62;
     const retirementAge = Number(scenario.retirement_age) || 67;
     const lifeExpectancy = Number(scenario.life_expectancy) || 90;
@@ -83,11 +173,15 @@ export function computeProjection(scenario, currentYear, otherAssets = []) {
     const incomeAssets = otherAssets.filter((a) => a.generates_income && Number(a.monthly_income) > 0);
     const saleAssets = otherAssets.filter((a) => a.expected_sale_age != null);
 
+    // Recurring-income mode: use the recurring_income table instead of scenario fields
+    const useRecurring = recurringIncomeSources.length > 0;
+
     const yearlyData = [];
     let portfolioAtRetirement = null;
     let portfolioRunsOut = null;
     let totalLifetimeIncome = 0;
     let monthlyIncomeAtRetirement = null;
+    let retirementIncomeBreakdown = null; // filled once, at the first retirement year
 
     for (let age = currentAge; age <= lifeExpectancy; age++) {
         const year = currentYear + (age - currentAge);
@@ -113,16 +207,47 @@ export function computeProjection(scenario, currentYear, otherAssets = []) {
             return s;
         }, 0);
 
-        const socialSecurity = age >= ssStartAge ? ssMonthly * 12 : 0;
-        const pensionIncome = retired ? pensionMonthly * 12 : 0;
-        const spouseSSIncome = (includeSpouse && age >= spouseSSAge) ? spouseSS * 12 : 0;
-        const spousePensionIncome = (includeSpouse && age >= spouseRetirementAge) ? spousePension * 12 : 0;
-        const rentalIncome = rentalMonthly * 12;
-        const otherIncome = retired ? otherMonthly * 12 : 0;
-        const guaranteedIncome = socialSecurity + pensionIncome + spouseSSIncome + spousePensionIncome
-            + rentalIncome + otherIncome + (retired ? 0 : otherAssetAnnualIncome);
-        const guaranteedIncomeRetired = socialSecurity + pensionIncome + spouseSSIncome + spousePensionIncome
-            + rentalIncome + otherIncome + (retired ? otherAssetAnnualIncome : 0);
+        // ── Guaranteed income calculation ──────────────────────────────────────
+        let socialSecurity, pensionIncome, spouseSSIncome, spousePensionIncome, rentalIncome, otherIncome;
+        let guaranteedIncome, guaranteedIncomeRetired, recurringAnnual;
+
+        if (useRecurring) {
+            // Pull from recurring_income table — each source carries its own start/end logic
+            const rec = recurringAt(recurringIncomeSources, age, currentAge, year);
+            recurringAnnual        = rec.annual;
+            // Other-asset (business) income sits on top of recurring sources, same as before
+            guaranteedIncome       = recurringAnnual + (!retired ? otherAssetAnnualIncome : 0);
+            guaranteedIncomeRetired = recurringAnnual + (retired  ? otherAssetAnnualIncome : 0);
+
+            // Capture the breakdown at the first retirement year for the summary card
+            if (retired && retirementIncomeBreakdown === null) {
+                retirementIncomeBreakdown = rec.breakdown;
+            }
+
+            // Zero out legacy fields — they're no longer the source of truth.
+            // yearlyData still carries them so the schema is stable; frontend
+            // prefers retirementIncomeBreakdown when it is present.
+            socialSecurity      = 0;
+            pensionIncome       = 0;
+            spouseSSIncome      = 0;
+            spousePensionIncome = 0;
+            rentalIncome        = 0;
+            otherIncome         = 0;
+        } else {
+            // ── Original scenario-field fallback ──────────────────────────────
+            recurringAnnual         = 0;
+            socialSecurity          = age >= ssStartAge ? ssMonthly * 12 : 0;
+            pensionIncome           = retired ? pensionMonthly * 12 : 0;
+            spouseSSIncome          = (includeSpouse && age >= spouseSSAge) ? spouseSS * 12 : 0;
+            spousePensionIncome     = (includeSpouse && age >= spouseRetirementAge) ? spousePension * 12 : 0;
+            rentalIncome            = rentalMonthly * 12;
+            otherIncome             = retired ? otherMonthly * 12 : 0;
+            guaranteedIncome        = socialSecurity + pensionIncome + spouseSSIncome + spousePensionIncome
+                                        + rentalIncome + otherIncome + (retired ? 0 : otherAssetAnnualIncome);
+            guaranteedIncomeRetired = socialSecurity + pensionIncome + spouseSSIncome + spousePensionIncome
+                                        + rentalIncome + otherIncome + (retired ? otherAssetAnnualIncome : 0);
+        }
+
         const inflationAdjustedSpending = spendingGoal * (1 + inflation) ** yearsFromNow;
 
         let withdrawal = 0;
@@ -145,6 +270,7 @@ export function computeProjection(scenario, currentYear, otherAssets = []) {
             } else if (withdrawalType === 'fixed') {
                 withdrawal = fixedWithdrawal;
             } else {
+                // income_gap: only withdraw what guaranteed income doesn't cover
                 withdrawal = Math.max(0, inflationAdjustedSpending - guaranteedIncomeRetired);
             }
             growth = portfolio * postReturn;
@@ -169,37 +295,58 @@ export function computeProjection(scenario, currentYear, otherAssets = []) {
         yearlyData.push({
             year,
             age,
-            portfolioValue: Math.round(portfolio),
-            portfolioGrowth: Math.round(growth || 0),
-            withdrawalAmount: Math.round(withdrawal),
-            socialSecurity: Math.round(socialSecurity),
-            pensionIncome: Math.round(pensionIncome),
-            spouseSocialSecurity: Math.round(spouseSSIncome),
-            spousePension: Math.round(spousePensionIncome),
-            rentalIncome: Math.round(rentalIncome),
-            otherIncome: Math.round(otherIncome),
-            otherAssetIncome: Math.round(retired ? otherAssetAnnualIncome : otherAssetAnnualIncome),
-            saleProceeds: Math.round(saleProceedsThisYear),
-            totalIncome: Math.round(totalIncome),
-            monthlyIncome: Math.round(totalIncome / 12),
+            portfolioValue:            Math.round(portfolio),
+            portfolioGrowth:           Math.round(growth || 0),
+            withdrawalAmount:          Math.round(withdrawal),
+            guaranteedIncomeAnnual:    Math.round(retired ? guaranteedIncomeRetired : guaranteedIncome),
+            // Legacy per-source fields (0 when useRecurring; still present for backward compat)
+            socialSecurity:            Math.round(socialSecurity),
+            pensionIncome:             Math.round(pensionIncome),
+            spouseSocialSecurity:      Math.round(spouseSSIncome),
+            spousePension:             Math.round(spousePensionIncome),
+            rentalIncome:              Math.round(rentalIncome),
+            otherIncome:               Math.round(otherIncome),
+            otherAssetIncome:          Math.round(otherAssetAnnualIncome),
+            saleProceeds:              Math.round(saleProceedsThisYear),
+            totalIncome:               Math.round(totalIncome),
+            monthlyIncome:             Math.round(totalIncome / 12),
             inflationAdjustedSpending: Math.round(inflationAdjustedSpending),
             retired,
         });
+    }
+
+    // Build the retirementIncomeBreakdown for fallback (scenario-field) mode
+    if (!useRecurring && portfolioAtRetirement !== null) {
+        const first = yearlyData.find((r) => r.retired);
+        if (first) {
+            retirementIncomeBreakdown = [
+                ...(first.socialSecurity   > 0 ? [{ name: 'Social Security',   type: 'social_security', monthly: Math.round(first.socialSecurity   / 12) }] : []),
+                ...(first.spouseSocialSecurity > 0 ? [{ name: 'Spouse SS',     type: 'social_security', monthly: Math.round(first.spouseSocialSecurity / 12) }] : []),
+                ...(first.pensionIncome    > 0 ? [{ name: 'Pension',           type: 'pension',         monthly: Math.round(first.pensionIncome    / 12) }] : []),
+                ...(first.spousePension    > 0 ? [{ name: 'Spouse Pension',    type: 'pension',         monthly: Math.round(first.spousePension    / 12) }] : []),
+                ...(first.rentalIncome     > 0 ? [{ name: 'Rental income',     type: 'rental',          monthly: Math.round(first.rentalIncome     / 12) }] : []),
+                ...(first.otherAssetIncome > 0 ? [{ name: 'Business income',   type: 'other',           monthly: Math.round(first.otherAssetIncome / 12) }] : []),
+                ...(first.otherIncome      > 0 ? [{ name: 'Other income',      type: 'other',           monthly: Math.round(first.otherIncome      / 12) }] : []),
+            ];
+        }
     }
 
     return {
         yearlyData,
         summary: {
             monthlyIncomeAtRetirement: Math.round(monthlyIncomeAtRetirement || 0),
-            portfolioAtRetirement: Math.round(portfolioAtRetirement ?? portfolio),
-            portfolioAtEndOfLife: Math.round(portfolio),
-            totalLifetimeIncome: Math.round(totalLifetimeIncome),
+            portfolioAtRetirement:     Math.round(portfolioAtRetirement ?? portfolio),
+            portfolioAtEndOfLife:      Math.round(portfolio),
+            totalLifetimeIncome:       Math.round(totalLifetimeIncome),
             portfolioRunsOut,
-            yearsOfRetirement: Math.max(0, lifeExpectancy - retirementAge),
+            yearsOfRetirement:         Math.max(0, lifeExpectancy - retirementAge),
             includeSpouse,
             spouseSS,
             spouseSSAge,
             spousePension,
+            // Rich breakdown at the first retirement year (available in both modes)
+            retirementIncomeBreakdown,
+            usedRecurringIncome: useRecurring,
         },
     };
 }
@@ -627,7 +774,9 @@ router.post('/:id/activate', requireAuth, requireProfile, async (req, res) => {
 
 router.get('/:id/projection', requireAuth, requireProfile, async (req, res) => {
     try {
-        const [scenarioResult, otherAssetsResult] = await Promise.all([
+        const profileId = req.profileId;
+
+        const [scenarioResult, otherAssetsResult, recurringResult] = await Promise.all([
             query(
                 `SELECT ${SCENARIO_COLUMNS}
                  FROM retirement_scenarios
@@ -641,7 +790,22 @@ router.get('/:id/projection', requireAuth, requireProfile, async (req, res) => {
                  FROM other_assets
                  WHERE user_id = $1 AND archived_at IS NULL
                    AND ($2::int IS NULL OR profile_id = $2)`,
-                [req.user.id, req.profileId]
+                [req.user.id, profileId]
+            ),
+            // Fetch active recurring income sources for this profile.
+            // profileId = null means combined view → aggregate all profiles.
+            query(
+                `SELECT id, name, income_type, monthly_amount,
+                        start_type, start_age, start_date,
+                        end_type, end_age, end_date, end_years,
+                        annual_increase_pct, is_inflation_adjusted,
+                        tax_treatment
+                 FROM recurring_income
+                 WHERE user_id = $1
+                   AND ($2::int IS NULL OR profile_id = $2)
+                   AND is_active = true
+                 ORDER BY COALESCE(start_age, 0) ASC, created_at ASC`,
+                [req.user.id, profileId]
             ),
         ]);
 
@@ -652,11 +816,18 @@ router.get('/:id/projection', requireAuth, requireProfile, async (req, res) => {
         const scenario = { ...scenarioResult.rows[0] };
         // Fall back to live account totals when the scenario has no explicit portfolio
         if (scenario.starting_portfolio === null) {
-            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id, req.profileId);
+            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id, profileId);
         }
 
-        const otherAssets = otherAssetsResult.rows;
-        const projection = computeProjection(scenario, new Date().getFullYear(), otherAssets);
+        const otherAssets          = otherAssetsResult.rows;
+        const recurringIncomeSources = recurringResult.rows;
+
+        const projection = computeProjection(
+            scenario,
+            new Date().getFullYear(),
+            otherAssets,
+            recurringIncomeSources,   // ← new: drives guaranteed-income when non-empty
+        );
         return res.json({ scenario: scenarioResult.rows[0], ...projection });
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Failed to compute projection' });

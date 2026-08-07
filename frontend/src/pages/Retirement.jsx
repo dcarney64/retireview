@@ -1,5 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import {
   Area,
@@ -426,8 +427,13 @@ export default function Retirement() {
     queryKey: ['household'],
     queryFn: async () => (await apiClient.get('/household')).data,
   });
+  const recurringIncomeQuery = useQuery({
+    queryKey: ['recurring-income', pid],
+    queryFn: async () => (await apiClient.get('/recurring-income')).data,
+  });
   const householdMembers = householdQuery.data || [];
   const firstSpouse = householdMembers.find((m) => m.relationship === 'spouse' || m.relationship === 'partner') || null;
+  const recurringIncomeSources = recurringIncomeQuery.data || [];
 
   const scenarios = useMemo(() => scenariosQuery.data || [], [scenariosQuery.data]);
 
@@ -529,19 +535,30 @@ export default function Retirement() {
     return firstRetired?.year ?? null;
   }, [projection]);
 
+  // retirementIncomeBreakdown is returned by the projection API in both modes:
+  //   - useRecurringIncome=true → each row is a real recurring_income source
+  //   - useRecurringIncome=false → built from the scenario's SS/pension/rental fields
+  // In either case we get a [{name, type, monthly}] array + portfolioWithdrawal.
+  const retirementIncomeBreakdown = summary?.retirementIncomeBreakdown ?? null;
+  const portfolioWithdrawalMonthly = (() => {
+    const first = projection?.yearlyData?.find((r) => r.retired);
+    return first ? Math.round(first.withdrawalAmount / 12) : null;
+  })();
+
+  // Legacy flat object kept for any remaining conditional renders below
   const guaranteedMonthly = summary != null && projection
     ? (() => {
         const first = projection.yearlyData.find((r) => r.retired);
         return first
           ? {
-              ss: first.socialSecurity / 12,
-              pension: first.pensionIncome / 12,
-              spouseSS: (first.spouseSocialSecurity || 0) / 12,
-              spousePension: (first.spousePension || 0) / 12,
-              rental: first.rentalIncome / 12,
-              other: first.otherIncome / 12,
-              otherAsset: (first.otherAssetIncome || 0) / 12,
-              portfolio: first.withdrawalAmount / 12,
+              ss:           first.socialSecurity         / 12,
+              pension:      first.pensionIncome           / 12,
+              spouseSS:    (first.spouseSocialSecurity || 0) / 12,
+              spousePension:(first.spousePension       || 0) / 12,
+              rental:       first.rentalIncome            / 12,
+              other:        first.otherIncome             / 12,
+              otherAsset:  (first.otherAssetIncome     || 0) / 12,
+              portfolio:    first.withdrawalAmount        / 12,
             }
           : null;
       })()
@@ -650,21 +667,77 @@ export default function Retirement() {
 
             <div className="space-y-4">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Income Sources</h4>
-              <div className="grid grid-cols-[1fr_auto] items-end gap-2">
-                <NumField id="sc-ss" label="Social Security ($/mo)" min="0" step="100"
-                  value={form.social_security_monthly} onChange={set('social_security_monthly')} />
-                <NumField id="sc-ss-age" label="From age" min="62" max="75"
-                  value={form.social_security_start_age} onChange={set('social_security_start_age')} className="w-20" />
-              </div>
-              <NumField id="sc-pension" label="Pension ($/mo)" min="0" step="100"
-                value={form.pension_monthly} onChange={set('pension_monthly')} />
-              <NumField
-                id="sc-rental" label="Rental income ($/mo)" min="0" step="100"
-                value={form.rental_income_monthly} onChange={set('rental_income_monthly')}
-                hint={rentalMonthly > 0 ? `Properties currently generate ${formatCurrency(rentalMonthly)}/mo` : null}
-              />
-              <NumField id="sc-other" label="Other income ($/mo)" min="0" step="100"
-                value={form.other_income_monthly} onChange={set('other_income_monthly')} />
+
+              {recurringIncomeSources.length > 0 ? (
+                /* ── Recurring income sources from the Income page ── */
+                <div className="space-y-2">
+                  {recurringIncomeSources.map((src) => {
+                    const startLabel = src.start_type === 'now'
+                      ? 'active now'
+                      : src.start_type === 'age' && src.start_age
+                        ? `starts age ${src.start_age}`
+                        : src.start_date ?? '';
+                    const endLabel = src.end_type === 'lifetime'
+                      ? 'lifetime'
+                      : src.end_type === 'age' && src.end_age
+                        ? `ends ${src.end_age}`
+                        : src.end_type === 'years' && src.end_years
+                          ? `${src.end_years}-yr certain`
+                          : '';
+                    return (
+                      <div
+                        key={src.id}
+                        className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
+                          src.is_active
+                            ? 'border-slate-700 bg-slate-800/40'
+                            : 'border-slate-800 opacity-40'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <span className="font-medium text-slate-200">{src.name}</span>
+                          <span className="ml-2 text-xs text-slate-500">
+                            {startLabel}{endLabel ? ` → ${endLabel}` : ''}
+                          </span>
+                        </div>
+                        <span className="ml-3 shrink-0 font-medium tabular-nums text-slate-300">
+                          {formatCurrency(src.monthly_amount)}/mo
+                        </span>
+                      </div>
+                    );
+                  })}
+                  <Link
+                    to="/income"
+                    className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
+                  >
+                    <ExternalLink size={11} /> Manage in Income page
+                  </Link>
+                </div>
+              ) : (
+                /* ── Manual fallback when no recurring sources exist ── */
+                <>
+                  <div className="grid grid-cols-[1fr_auto] items-end gap-2">
+                    <NumField id="sc-ss" label="Social Security ($/mo)" min="0" step="100"
+                      value={form.social_security_monthly} onChange={set('social_security_monthly')} />
+                    <NumField id="sc-ss-age" label="From age" min="62" max="75"
+                      value={form.social_security_start_age} onChange={set('social_security_start_age')} className="w-20" />
+                  </div>
+                  <NumField id="sc-pension" label="Pension ($/mo)" min="0" step="100"
+                    value={form.pension_monthly} onChange={set('pension_monthly')} />
+                  <NumField
+                    id="sc-rental" label="Rental income ($/mo)" min="0" step="100"
+                    value={form.rental_income_monthly} onChange={set('rental_income_monthly')}
+                    hint={rentalMonthly > 0 ? `Properties currently generate ${formatCurrency(rentalMonthly)}/mo` : null}
+                  />
+                  <NumField id="sc-other" label="Other income ($/mo)" min="0" step="100"
+                    value={form.other_income_monthly} onChange={set('other_income_monthly')} />
+                  <Link
+                    to="/income"
+                    className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
+                  >
+                    <ExternalLink size={11} /> Set up recurring income sources →
+                  </Link>
+                </>
+              )}
             </div>
           </div>
 
@@ -799,57 +872,37 @@ export default function Retirement() {
           </h3>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div className="space-y-1.5 text-sm">
-              {guaranteedMonthly ? (
-                <>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Portfolio withdrawal</span>
-                    <span className="text-slate-100">{formatCurrency(guaranteedMonthly.portfolio)}/mo</span>
+              {/* Per-source breakdown — works in both recurring and legacy modes */}
+              {retirementIncomeBreakdown?.map((item, i) => (
+                item.monthly > 0 ? (
+                  <div key={i} className="flex justify-between">
+                    <span className="text-slate-400">{item.name}</span>
+                    <span className="text-slate-100">{formatCurrency(item.monthly)}/mo</span>
                   </div>
-                  {guaranteedMonthly.ss > 0 ? (
+                ) : null
+              ))}
+              {/* Portfolio withdrawal — always shown separately */}
+              {portfolioWithdrawalMonthly != null && portfolioWithdrawalMonthly > 0 ? (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Portfolio withdrawal</span>
+                  <span className="text-slate-100">{formatCurrency(portfolioWithdrawalMonthly)}/mo</span>
+                </div>
+              ) : null}
+              {/* Legacy fallback: no breakdown available (shouldn't happen but safe) */}
+              {!retirementIncomeBreakdown && guaranteedMonthly ? (
+                <>
+                  {guaranteedMonthly.ss > 0 && (
                     <div className="flex justify-between">
                       <span className="text-slate-400">Social Security</span>
                       <span className="text-slate-100">{formatCurrency(guaranteedMonthly.ss)}/mo</span>
                     </div>
-                  ) : null}
-                  {guaranteedMonthly.spouseSS > 0 ? (
+                  )}
+                  {guaranteedMonthly.portfolio > 0 && (
                     <div className="flex justify-between">
-                      <span className="text-slate-400">
-                        {firstSpouse?.name || 'Spouse'} Social Security
-                        {summary.spouseSSAge ? ` (from ${summary.spouseSSAge})` : ''}
-                      </span>
-                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.spouseSS)}/mo</span>
+                      <span className="text-slate-400">Portfolio withdrawal</span>
+                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.portfolio)}/mo</span>
                     </div>
-                  ) : null}
-                  {guaranteedMonthly.pension > 0 ? (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Pension</span>
-                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.pension)}/mo</span>
-                    </div>
-                  ) : null}
-                  {guaranteedMonthly.spousePension > 0 ? (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">{firstSpouse?.name || 'Spouse'} Pension</span>
-                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.spousePension)}/mo</span>
-                    </div>
-                  ) : null}
-                  {guaranteedMonthly.rental > 0 ? (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Rental income</span>
-                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.rental)}/mo</span>
-                    </div>
-                  ) : null}
-                  {guaranteedMonthly.otherAsset > 0 ? (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Business/other income</span>
-                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.otherAsset)}/mo</span>
-                    </div>
-                  ) : null}
-                  {guaranteedMonthly.other > 0 ? (
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Other income</span>
-                      <span className="text-slate-100">{formatCurrency(guaranteedMonthly.other)}/mo</span>
-                    </div>
-                  ) : null}
+                  )}
                 </>
               ) : null}
               <div className="flex justify-between border-t border-slate-800 pt-2 font-medium">
@@ -860,6 +913,14 @@ export default function Retirement() {
                 <span className="text-slate-400">Annual income</span>
                 <span className="text-slate-100">{formatCurrency(summary.monthlyIncomeAtRetirement * 12)}/yr</span>
               </div>
+              {summary.usedRecurringIncome && (
+                <Link
+                  to="/income"
+                  className="mt-1 flex items-center gap-1 text-xs text-sky-500 hover:text-sky-400 hover:underline"
+                >
+                  <ExternalLink size={10} /> Manage income sources
+                </Link>
+              )}
             </div>
             <div className="space-y-1.5 text-sm lg:border-l lg:border-slate-800 lg:pl-6">
               <div className="flex justify-between">
