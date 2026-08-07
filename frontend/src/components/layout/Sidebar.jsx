@@ -1,7 +1,9 @@
 import {
   Building2,
+  DollarSign,
   LayoutDashboard,
   LineChart,
+  Receipt,
   Target,
   TrendingUp,
   Upload,
@@ -12,13 +14,15 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 
 const mainItems = [
-  { label: 'Dashboard',   path: '/',            icon: LayoutDashboard },
-  { label: 'Net Worth',   path: '/net-worth',   icon: TrendingUp      },
-  { label: 'Performance', path: '/performance', icon: LineChart       },
-  { label: 'Real Estate', path: '/real-estate', icon: Building2       },
-  { label: 'Accounts',    path: '/accounts',    icon: Wallet          },
-  { label: 'Import Data', path: '/import',      icon: Upload          },
-  { label: 'Retirement',  path: '/retirement',  icon: Target          },
+  { label: 'Dashboard',    path: '/',             icon: LayoutDashboard },
+  { label: 'Net Worth',    path: '/net-worth',    icon: TrendingUp      },
+  { label: 'Performance',  path: '/performance',  icon: LineChart       },
+  { label: 'Real Estate',  path: '/real-estate',  icon: Building2       },
+  { label: 'Accounts',     path: '/accounts',     icon: Wallet          },
+  { label: 'Import Data',  path: '/import',       icon: Upload          },
+  { label: 'Retirement',   path: '/retirement',   icon: Target          },
+  { label: 'Tax Planning', path: '/tax-planning', icon: Receipt         },
+  { label: 'Income',       path: '/income',       icon: DollarSign      },
 ];
 
 const adminItems = [

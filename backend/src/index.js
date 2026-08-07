@@ -24,10 +24,13 @@ import authRoutes from './routes/auth.js';
 import connectionsRoutes from './routes/connections.js';
 import importRoutes from './routes/import.js';
 import goalsRoutes from './routes/goals.js';
+import incomeRoutes from './routes/income.js';
 import netWorthRoutes from './routes/netWorth.js';
 import performanceRoutes from './routes/performance.js';
 import propertiesRoutes from './routes/properties.js';
+import reportsRoutes from './routes/reports.js';
 import scenariosRoutes from './routes/scenarios.js';
+import taxRoutes from './routes/tax.js';
 import settingsRoutes from './routes/settings.js';
 import snapshotsRoutes from './routes/snapshots.js';
 import snaptradeRoutes from './routes/snaptrade.js';
@@ -106,6 +109,9 @@ app.use('/api/performance', performanceRoutes);
 app.use('/api/properties', propertiesRoutes);
 app.use('/api/net-worth', netWorthRoutes);
 app.use('/api/scenarios', scenariosRoutes);
+app.use('/api/tax', taxRoutes);
+app.use('/api/income', incomeRoutes);
+app.use('/api/reports', reportsRoutes);
 
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });

@@ -374,8 +374,33 @@ button {
   }
 
   #portfolio-report,
-  #portfolio-report * {
+  #portfolio-report *,
+  .print-report,
+  .print-report * {
     visibility: visible;
+  }
+
+  .print-report {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 24px;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .print-report h1,
+  .print-report h2,
+  .print-report td,
+  .print-report th,
+  .print-report p,
+  .print-report div,
+  .print-report footer {
+    color: #000000 !important;
+    border-color: #cbd5e1 !important;
   }
 
   #portfolio-report {

@@ -3,6 +3,7 @@ import cron from 'node-cron';
 import { query } from '../db/client.js';
 import { cleanupSecurityTables } from '../services/authSecurityService.js';
 import { syncComposerAccountsForUser } from '../services/composerService.js';
+import { sendWeeklyDigest } from '../services/digestService.js';
 import { cleanupExpiredTrustedIPs } from '../services/otpService.js';
 import { isConfigured as snaptradeConfigured, syncAccountsForUser } from '../services/snaptradeService.js';
 
@@ -52,6 +53,35 @@ export async function initAllJobs() {
 
     if (composerSyncJob) composerSyncJob.stop();
     composerSyncJob = cron.schedule(COMPOSER_SYNC_CRON, runComposerSyncJob);
+
+    if (weeklyDigestJob) weeklyDigestJob.stop();
+    weeklyDigestJob = cron.schedule(WEEKLY_DIGEST_CRON, runWeeklyDigestJob);
+}
+
+// Monday 8:00 AM — emails a net-worth summary to every active user who has
+// digests enabled. Runs after the 5:30/5:45 syncs so balances are fresh.
+const WEEKLY_DIGEST_CRON = process.env.WEEKLY_DIGEST_CRON || '0 8 * * 1';
+
+let weeklyDigestJob = null;
+
+export async function runWeeklyDigestJob() {
+    try {
+        const users = await query(
+            `SELECT id, email FROM users
+             WHERE is_active = true AND email_digest_enabled = true`
+        );
+
+        for (const row of users.rows) {
+            try {
+                await sendWeeklyDigest(row.id);
+                console.log(`[digest] Sent weekly digest to ${row.email}`);
+            } catch (error) {
+                console.error(`[digest] Failed for ${row.email}:`, error.message);
+            }
+        }
+    } catch (error) {
+        console.error('[digest] Weekly digest job failed:', error.message);
+    }
 }
 
 // Daily at 5:30 AM (SNAPTRADE_SYNC_CRON) — refreshes balances from SnapTrade

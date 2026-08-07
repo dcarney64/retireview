@@ -2,7 +2,9 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Line,
   LineChart,
   ReferenceLine,
@@ -77,6 +79,318 @@ function ChartTooltip({ active, payload, label }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// Band colors: worst-to-best outcome bands on the fan chart
+const BAND_RED = '#dc2626';
+const BAND_AMBER = '#c98500';
+const BAND_GREEN = '#199e70';
+
+function FanChartTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  const rows = [
+    ['Best 10%', d.p90, BAND_GREEN],
+    ['Top 25%', d.p75, BAND_GREEN],
+    ['Median', d.p50, '#e2e8f0'],
+    ['Bottom 25%', d.p25, BAND_AMBER],
+    ['Worst 10%', d.p10, BAND_RED],
+  ];
+  return (
+    <div className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm shadow-lg">
+      <div className="mb-1 text-xs text-slate-400">Age {d.age} · {d.year}</div>
+      {rows.map(([label, value, color]) => (
+        <div key={label} className="flex items-center gap-2">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+          <span className="text-slate-300">{label}</span>
+          <span className="ml-auto pl-3 font-medium text-slate-100">{formatCurrency(value)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MonteCarloSection({ scenario }) {
+  const mcQuery = useQuery({
+    queryKey: ['monte-carlo', scenario.id, scenario.updated_at],
+    queryFn: async () => (await apiClient.get(`/scenarios/${scenario.id}/monte-carlo`)).data,
+    enabled: false,
+    staleTime: Infinity,
+  });
+
+  const mc = mcQuery.data;
+  const lifeExpectancy = Number(scenario.life_expectancy) || 90;
+  const retirementAge = Number(scenario.retirement_age) || 67;
+
+  const fanData = useMemo(() => {
+    if (!mc) return [];
+    // Stacked-diff encoding: each band area is the delta above the band below
+    return mc.fanChartData.map((d) => ({
+      ...d,
+      base: d.p10,
+      band1025: d.p25 - d.p10,
+      band2575: d.p75 - d.p25,
+      band7590: d.p90 - d.p75,
+    }));
+  }, [mc]);
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-lg font-semibold">🎲 Monte Carlo Simulation</h3>
+        <Button onClick={() => mcQuery.refetch()} disabled={mcQuery.isFetching}>
+          {mcQuery.isFetching ? (
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              Running 1,000 simulations…
+            </span>
+          ) : mc ? 'Re-run Simulation' : 'Run Simulation'}
+        </Button>
+      </div>
+
+      {mcQuery.isError ? (
+        <p className="mt-4 text-sm text-red-400">Simulation failed — try again.</p>
+      ) : null}
+
+      {!mc && !mcQuery.isFetching ? (
+        <p className="mt-4 text-sm text-slate-400">
+          Runs 1,000 randomized market scenarios (12% annual volatility) against this plan to estimate
+          how often your portfolio survives to age {lifeExpectancy}.
+        </p>
+      ) : null}
+
+      {mc ? (
+        <div className="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <div className="space-y-4 text-sm">
+            <div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-slate-400">Success rate</span>
+                <span className={`text-2xl font-semibold ${mc.successRate >= 90 ? 'text-emerald-400' : mc.successRate >= 75 ? 'text-amber-400' : 'text-red-400'}`}>
+                  {mc.successRate}%
+                </span>
+              </div>
+              <div className="mt-1 h-3 overflow-hidden rounded-full bg-slate-800" role="progressbar"
+                aria-valuenow={Math.round(mc.successRate)} aria-valuemin={0} aria-valuemax={100}>
+                <div
+                  className={`h-full rounded-full ${mc.successRate >= 90 ? 'bg-emerald-500' : mc.successRate >= 75 ? 'bg-amber-500' : 'bg-red-500'}`}
+                  style={{ width: `${mc.successRate}%` }}
+                />
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                of simulations your portfolio lasts to age {lifeExpectancy}
+              </p>
+            </div>
+
+            <div className="flex justify-between border-t border-slate-800 pt-3">
+              <span className="text-slate-400">Median portfolio at age {lifeExpectancy}</span>
+              <span className="font-medium text-slate-100">{formatCurrency(mc.medianEndValue)}</span>
+            </div>
+
+            <div>
+              <div className="mb-1.5 text-slate-400">Outcome range at age {lifeExpectancy}</div>
+              <div className="space-y-1">
+                {[
+                  ['Best 10%', mc.percentile90, BAND_GREEN, '+'],
+                  ['Good 25%', mc.percentile75, BAND_GREEN, '+'],
+                  ['Median', mc.percentile50, '#e2e8f0', ''],
+                  ['Weak 25%', mc.percentile25, BAND_AMBER, ''],
+                  ['Worst 10%', mc.percentile10, BAND_RED, ''],
+                ].map(([label, value, color, suffix]) => (
+                  <div key={label} className="flex items-center gap-2">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ background: color }} />
+                    <span className="text-slate-400">{label}</span>
+                    <span className="ml-auto font-mono text-slate-200">{formatCurrency(value)}{suffix}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {Object.keys(mc.runsOutBefore).length > 0 ? (
+              <div className="border-t border-slate-800 pt-3">
+                <div className="mb-1.5 text-slate-400">Risk of running out</div>
+                {Object.entries(mc.runsOutBefore).map(([key, pct]) => (
+                  <div key={key} className="flex justify-between">
+                    <span className="text-slate-400">Before age {key.replace('age', '')}</span>
+                    <span className={pct > 10 ? 'text-red-400' : pct > 5 ? 'text-amber-400' : 'text-slate-200'}>
+                      {pct}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={fanData} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="#1e293b" vertical={false} />
+                  <XAxis dataKey="age" tick={{ fill: '#94a3b8', fontSize: 12 }}
+                    axisLine={{ stroke: '#334155' }} tickLine={false} minTickGap={25} />
+                  <YAxis tickFormatter={(v) => formatCurrency(v, { compact: true })}
+                    tick={{ fill: '#94a3b8', fontSize: 12 }} axisLine={false} tickLine={false} width={65} />
+                  <Tooltip content={<FanChartTooltip />} cursor={{ stroke: '#475569', strokeWidth: 1 }} />
+                  <ReferenceLine x={retirementAge} stroke="#64748b" strokeDasharray="4 4"
+                    label={{ value: 'Retire', fill: '#94a3b8', fontSize: 11, position: 'insideTopLeft' }} />
+                  <Area dataKey="base" stackId="fan" stroke="none" fill="transparent" isAnimationActive={false} />
+                  <Area dataKey="band1025" name="10–25%" stackId="fan" stroke="none"
+                    fill={BAND_RED} fillOpacity={0.25} isAnimationActive={false} />
+                  <Area dataKey="band2575" name="25–75%" stackId="fan" stroke="none"
+                    fill={BAND_AMBER} fillOpacity={0.25} isAnimationActive={false} />
+                  <Area dataKey="band7590" name="75–90%" stackId="fan" stroke="none"
+                    fill={BAND_GREEN} fillOpacity={0.25} isAnimationActive={false} />
+                  <Line dataKey="p50" name="Median" stroke="#e2e8f0" strokeWidth={2} dot={false} isAnimationActive={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <ul className="mt-2 flex flex-wrap gap-3 text-xs text-slate-400">
+              <li className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: BAND_RED, opacity: 0.5 }} /> Worst 10–25%</li>
+              <li className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: BAND_AMBER, opacity: 0.5 }} /> Middle 25–75%</li>
+              <li className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: BAND_GREEN, opacity: 0.5 }} /> Best 75–90%</li>
+              <li className="flex items-center gap-1.5"><span className="h-0.5 w-3" style={{ background: '#e2e8f0' }} /> Median</li>
+            </ul>
+          </div>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function riskLabel(successRate) {
+  if (successRate >= 98) return ['Very Low', 'text-emerald-400'];
+  if (successRate >= 95) return ['Low', 'text-emerald-400'];
+  if (successRate >= 90) return ['Moderate', 'text-amber-400'];
+  if (successRate >= 80) return ['High', 'text-amber-400'];
+  return ['Very High', 'text-red-400'];
+}
+
+function SwrSection({ scenario }) {
+  const queryClient = useQueryClient();
+  const [sortBy, setSortBy] = useState({ key: 'rate', dir: 1 });
+  const [applied, setApplied] = useState(false);
+
+  const swrQuery = useQuery({
+    queryKey: ['swr', scenario.id, scenario.updated_at],
+    queryFn: async () => (await apiClient.get(`/scenarios/${scenario.id}/safe-withdrawal-rate`)).data,
+    enabled: false,
+    staleTime: Infinity,
+  });
+  const swr = swrQuery.data;
+
+  const applyMutation = useMutation({
+    mutationFn: async () => apiClient.put(`/scenarios/${scenario.id}`, {
+      withdrawal_rate: swr.safeRate,
+      withdrawal_type: 'percentage',
+    }),
+    onSuccess: () => {
+      setApplied(true);
+      setTimeout(() => setApplied(false), 3000);
+      queryClient.invalidateQueries({ queryKey: ['scenarios'] });
+      queryClient.invalidateQueries({ queryKey: ['projection'] });
+    },
+  });
+
+  const sortedTable = useMemo(() => {
+    if (!swr) return [];
+    const keyMap = { rate: 'rate', success: 'successRate', income: 'monthlyIncome' };
+    const key = keyMap[sortBy.key];
+    return [...swr.rateTable].sort((a, b) => (a[key] - b[key]) * sortBy.dir);
+  }, [swr, sortBy]);
+
+  const toggleSort = (key) => setSortBy((prev) =>
+    prev.key === key ? { key, dir: -prev.dir } : { key, dir: 1 });
+
+  const sortArrow = (key) => (sortBy.key === key ? (sortBy.dir === 1 ? ' ▲' : ' ▼') : '');
+
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-lg font-semibold">🛡️ Safe Withdrawal Rate Analysis</h3>
+        <Button onClick={() => swrQuery.refetch()} disabled={swrQuery.isFetching}>
+          {swrQuery.isFetching ? (
+            <span className="flex items-center gap-2">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              Analyzing…
+            </span>
+          ) : swr ? 'Re-analyze' : 'Analyze'}
+        </Button>
+      </div>
+
+      {swrQuery.isError ? (
+        <p className="mt-4 text-sm text-red-400">Analysis failed — try again.</p>
+      ) : null}
+
+      {!swr && !swrQuery.isFetching ? (
+        <p className="mt-4 text-sm text-slate-400">
+          Finds the highest withdrawal rate that survives Monte Carlo testing, based on your portfolio
+          at retirement ({'>'}95% success = safe).
+        </p>
+      ) : null}
+
+      {swr ? (
+        <div className="mt-5 space-y-5">
+          <p className="text-sm text-slate-400">
+            Based on a projected portfolio of{' '}
+            <span className="text-slate-200">{formatCurrency(swr.portfolioAtRetirement)}</span> at retirement:
+          </p>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            {[
+              ['Conservative', '99% success', swr.conservativeRate, swr.conservativeMonthlyIncome],
+              ['Safe', '95% success', swr.safeRate, swr.safeMonthlyIncome],
+              ['Aggressive', '85% success', swr.aggressiveRate, swr.aggressiveMonthlyIncome],
+            ].map(([label, sub, rate, income]) => (
+              <div key={label} className={`rounded-lg border p-4 ${label === 'Safe' ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-slate-800'}`}>
+                <div className="text-sm text-slate-400">{label} <span className="text-xs text-slate-500">({sub})</span></div>
+                <div className="mt-1 text-2xl font-semibold text-slate-100">{rate}%</div>
+                <div className="text-sm text-slate-400">= {formatCurrency(income)}/mo</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-left text-slate-400">
+                  <th className="cursor-pointer py-2 pr-4 font-normal hover:text-slate-200" onClick={() => toggleSort('rate')}>
+                    Rate{sortArrow('rate')}
+                  </th>
+                  <th className="cursor-pointer py-2 pr-4 font-normal hover:text-slate-200" onClick={() => toggleSort('success')}>
+                    Success{sortArrow('success')}
+                  </th>
+                  <th className="cursor-pointer py-2 pr-4 text-right font-normal hover:text-slate-200" onClick={() => toggleSort('income')}>
+                    Monthly Income{sortArrow('income')}
+                  </th>
+                  <th className="py-2 font-normal">Risk</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300">
+                {sortedTable.map((row) => {
+                  const [label, colorClass] = riskLabel(row.successRate);
+                  const isSafe = row.rate === swr.safeRate;
+                  return (
+                    <tr key={row.rate} className={`border-b border-slate-800/40 ${isSafe ? 'bg-emerald-500/5' : ''}`}>
+                      <td className="py-1.5 pr-4">{row.rate.toFixed(1)}%</td>
+                      <td className="py-1.5 pr-4">{row.successRate}%</td>
+                      <td className="py-1.5 pr-4 text-right font-mono">{formatCurrency(row.monthlyIncome)}</td>
+                      <td className={`py-1.5 ${colorClass}`}>{label}{isSafe ? ' ← Safe' : ''}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button onClick={() => applyMutation.mutate()} disabled={applyMutation.isPending}>
+              {applyMutation.isPending ? 'Applying…' : `Use Safe Rate (${swr.safeRate}%) in Scenario`}
+            </Button>
+            {applied ? <span className="text-sm text-emerald-400">Scenario updated</span> : null}
+          </div>
+        </div>
+      ) : null}
+    </Card>
   );
 }
 
@@ -591,6 +905,10 @@ export default function Retirement() {
           </ul>
         </Card>
       ) : null}
+
+      {/* ── Monte Carlo + SWR ─────────────────────────────────── */}
+      {selected ? <MonteCarloSection scenario={selected} /> : null}
+      {selected ? <SwrSection scenario={selected} /> : null}
 
       {/* ── Year-by-year runway table ─────────────────────────── */}
       {projection ? (

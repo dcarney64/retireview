@@ -15,6 +15,8 @@ import {
 } from 'recharts';
 
 import apiClient from '../api/client';
+import Skeleton from '../components/shared/Skeleton';
+import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { formatCurrency } from '../lib/accountTypes';
 
@@ -95,13 +97,46 @@ export default function NetWorth() {
   }, [data]);
 
   if (netWorthQuery.isLoading) {
-    return <p className="py-12 text-center text-sm text-slate-400">Loading net worth…</p>;
+    return (
+      <div className="space-y-6">
+        <div>
+          <Skeleton className="h-5 w-32" />
+          <Skeleton className="mt-2 h-12 w-64" />
+        </div>
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
+          <Card className="xl:col-span-2 space-y-3">
+            {[0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-6 w-full" />)}
+          </Card>
+          <Card className="xl:col-span-3"><Skeleton className="h-80 w-full" /></Card>
+        </div>
+      </div>
+    );
   }
   if (netWorthQuery.isError || !data) {
-    return <p className="py-12 text-center text-sm text-red-400">Failed to load net worth data.</p>;
+    return (
+      <div className="py-12 text-center text-sm">
+        <p className="text-red-400">Unable to load your net worth. Check your connection and try again.</p>
+        <Button className="mt-3" onClick={() => netWorthQuery.refetch()}>Retry</Button>
+      </div>
+    );
   }
 
   const { liquid, realEstate, other, liabilities, totalAssets, netWorth, history } = data;
+
+  if (liquid.accounts.length === 0 && realEstate.properties.length === 0 && other.accounts.length === 0) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-2xl font-semibold">Net Worth</h2>
+        <Card>
+          <p className="py-10 text-center text-sm text-slate-400">
+            Add your <Link to="/accounts" className="text-sky-400 hover:underline">accounts</Link> and{' '}
+            <Link to="/real-estate" className="text-sky-400 hover:underline">properties</Link> to see your
+            complete net worth.
+          </p>
+        </Card>
+      </div>
+    );
+  }
   const pctOfNet = (v) => (netWorth > 0 ? (v / netWorth) * 100 : null);
 
   return (

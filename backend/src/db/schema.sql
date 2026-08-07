@@ -476,3 +476,34 @@ FROM users u
 WHERE NOT EXISTS (
   SELECT 1 FROM retirement_scenarios rs WHERE rs.user_id = u.id
 );
+
+-- ============================================================
+-- INCOME EVENTS
+-- Dividend/interest/rental/capital-gain income entries for the
+-- Income tracker page. Manual entries plus rows synced from
+-- broker transaction feeds.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS income_events (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id      UUID REFERENCES accounts(id) ON DELETE SET NULL,
+  event_type      TEXT NOT NULL
+                  CHECK (event_type IN ('dividend', 'interest', 'rental', 'capital_gain', 'other')),
+  amount          NUMERIC(15,2) NOT NULL,
+  symbol          TEXT,
+  description     TEXT,
+  event_date      DATE NOT NULL,
+  tax_treatment   TEXT DEFAULT 'taxable'
+                  CHECK (tax_treatment IN ('taxable', 'tax_deferred', 'tax_free')),
+  source          TEXT DEFAULT 'manual',
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_income_events_user ON income_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_income_events_date ON income_events(event_date);
+
+-- ============================================================
+-- EMAIL DIGEST PREFERENCES
+-- ============================================================
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS email_digest_enabled BOOLEAN DEFAULT true,
+  ADD COLUMN IF NOT EXISTS digest_frequency TEXT DEFAULT 'weekly';

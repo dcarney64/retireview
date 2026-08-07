@@ -1,5 +1,6 @@
 import React from 'react';
 
+import KeyboardShortcuts from '../shared/KeyboardShortcuts';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 
@@ -11,6 +12,7 @@ export default function Layout({ children }) {
         <TopBar />
         <main className="flex-1 p-6">{children}</main>
       </div>
+      <KeyboardShortcuts />
     </div>
   );
 }

@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 
 import apiClient from '../api/client';
+import Skeleton from '../components/shared/Skeleton';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { ACCOUNT_TYPES, formatCurrency, typeColor, typeLabel } from '../lib/accountTypes';
@@ -195,15 +196,30 @@ export default function Dashboard() {
             </p>
           ) : null}
         </div>
-        <div className="text-right">
-          <Button onClick={() => snapshotMutation.mutate()} disabled={snapshotMutation.isPending}>
-            {snapshotMutation.isPending ? 'Saving...' : 'Take Snapshot'}
-          </Button>
-          {snapshotError ? <p className="mt-1 text-sm text-red-400">{snapshotError}</p> : null}
+        <div className="flex gap-2 text-right">
+          <Link to="/report">
+            <Button className="bg-slate-700 hover:bg-slate-600">Print Report</Button>
+          </Link>
+          <div>
+            <Button onClick={() => snapshotMutation.mutate()} disabled={snapshotMutation.isPending}>
+              {snapshotMutation.isPending ? 'Saving...' : 'Take Snapshot'}
+            </Button>
+            {snapshotError ? <p className="mt-1 text-sm text-red-400">{snapshotError}</p> : null}
+          </div>
         </div>
       </div>
 
       {/* Quick stats */}
+      {accountsQuery.isLoading || netWorthQuery.isLoading ? (
+        <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Card key={i} className="p-4">
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="mt-2 h-8 w-36" />
+            </Card>
+          ))}
+        </div>
+      ) : (
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <Card className="p-4">
           <div className="text-sm text-slate-400">Liquid Net Worth</div>
@@ -233,6 +249,7 @@ export default function Dashboard() {
           </Link>
         </Card>
       </div>
+      )}
 
       <Card>
         <h3 className="mb-3 text-lg font-semibold">Goal Progress</h3>

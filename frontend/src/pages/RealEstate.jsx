@@ -484,7 +484,7 @@ export default function RealEstate() {
       ) : properties.length === 0 ? (
         <Card>
           <p className="py-8 text-center text-sm text-slate-400">
-            No properties yet — add your home, rentals, or land to track them alongside your portfolio.
+            Add your first property to track real estate equity alongside your portfolio.
           </p>
         </Card>
       ) : (

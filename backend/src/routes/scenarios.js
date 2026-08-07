@@ -38,7 +38,8 @@ async function liquidPortfolioTotal(userId) {
 
 // Year-by-year projection. Pre-retirement the portfolio compounds untouched;
 // post-retirement it grows then pays out the chosen withdrawal each year.
-function computeProjection(scenario, currentYear) {
+// Exported for the email digest service.
+export function computeProjection(scenario, currentYear) {
     const currentAge = Number(scenario.current_age) || 62;
     const retirementAge = Number(scenario.retirement_age) || 67;
     const lifeExpectancy = Number(scenario.life_expectancy) || 90;
@@ -144,6 +145,262 @@ function computeProjection(scenario, currentYear) {
         },
     };
 }
+
+// ─── Monte Carlo engine ──────────────────────────────────────────────────────
+
+const MC_STDDEV = 0.12; // historical equity-market annual volatility
+
+// Box-Muller transform → standard normal draw
+function randNormal() {
+    let u = 0;
+    let v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+// Pre-generated shock matrix lets every rate evaluation in the SWR binary
+// search reuse identical randomness (common random numbers), which keeps the
+// success-rate curve monotone in the withdrawal rate.
+function generateShocks(numSims, numYears) {
+    const shocks = [];
+    for (let s = 0; s < numSims; s++) {
+        const row = new Float64Array(numYears);
+        for (let y = 0; y < numYears; y++) row[y] = randNormal();
+        shocks.push(row);
+    }
+    return shocks;
+}
+
+function normalizeScenario(scenario) {
+    const currentAge = Number(scenario.current_age) || 62;
+    const retirementAge = Number(scenario.retirement_age) || 67;
+    return {
+        currentAge,
+        retirementAge,
+        lifeExpectancy: Number(scenario.life_expectancy) || 90,
+        preReturn: Number(scenario.pre_retirement_return) / 100 || 0,
+        postReturn: Number(scenario.post_retirement_return) / 100 || 0,
+        inflation: Number(scenario.inflation_rate) / 100 || 0,
+        ssMonthly: Number(scenario.social_security_monthly) || 0,
+        ssStartAge: Number(scenario.social_security_start_age) || retirementAge,
+        pensionMonthly: Number(scenario.pension_monthly) || 0,
+        rentalMonthly: Number(scenario.rental_income_monthly) || 0,
+        otherMonthly: Number(scenario.other_income_monthly) || 0,
+        withdrawalRate: Number(scenario.withdrawal_rate) / 100 || 0,
+        withdrawalType: WITHDRAWAL_TYPES.includes(scenario.withdrawal_type)
+            ? scenario.withdrawal_type : 'percentage',
+        fixedWithdrawal: Number(scenario.fixed_withdrawal_amount) || 0,
+        spendingGoal: Number(scenario.annual_spending_goal) || 0,
+        startingPortfolio: (Number(scenario.starting_portfolio) || 0)
+            + (scenario.include_real_estate ? (Number(scenario.real_estate_value) || 0) : 0),
+    };
+}
+
+function guaranteedIncomeAt(params, age) {
+    const retired = age >= params.retirementAge;
+    return (age >= params.ssStartAge ? params.ssMonthly * 12 : 0)
+        + (retired ? params.pensionMonthly * 12 : 0)
+        + params.rentalMonthly * 12
+        + (retired ? params.otherMonthly * 12 : 0);
+}
+
+/**
+ * Runs one simulated lifetime path. Returns { values: [per-year portfolio],
+ * runOutAge: age the portfolio hit 0 (null = survived) }.
+ *
+ * swrOverride: when set, ignores the scenario's withdrawal strategy and
+ * withdraws (rate × portfolio-at-retirement) in year one, inflation-adjusted
+ * thereafter — the classic SWR definition.
+ */
+function simulatePath(params, shockRow, swrOverride = null) {
+    let portfolio = params.startingPortfolio;
+    let runOutAge = null;
+    let swrBaseWithdrawal = null;
+    const values = [];
+
+    for (let age = params.currentAge, y = 0; age <= params.lifeExpectancy; age++, y++) {
+        const retired = age >= params.retirementAge;
+        const yearsFromNow = age - params.currentAge;
+        const mean = retired ? params.postReturn : params.preReturn;
+        const ret = mean + MC_STDDEV * shockRow[y];
+
+        if (!retired) {
+            portfolio *= (1 + ret);
+        } else {
+            let withdrawal;
+            if (swrOverride != null) {
+                if (swrBaseWithdrawal === null) swrBaseWithdrawal = portfolio * swrOverride;
+                withdrawal = swrBaseWithdrawal * (1 + params.inflation) ** (age - params.retirementAge);
+            } else if (params.withdrawalType === 'percentage') {
+                withdrawal = portfolio * params.withdrawalRate;
+            } else if (params.withdrawalType === 'fixed') {
+                withdrawal = params.fixedWithdrawal;
+            } else {
+                const spending = params.spendingGoal * (1 + params.inflation) ** yearsFromNow;
+                withdrawal = Math.max(0, spending - guaranteedIncomeAt(params, age));
+            }
+            portfolio = portfolio * (1 + ret) - withdrawal;
+            if (portfolio <= 0) {
+                portfolio = 0;
+                if (runOutAge === null) runOutAge = age;
+            }
+        }
+        values.push(portfolio);
+    }
+
+    return { values, runOutAge };
+}
+
+function percentile(sortedArr, p) {
+    if (!sortedArr.length) return 0;
+    const idx = Math.min(sortedArr.length - 1, Math.max(0, Math.round((p / 100) * (sortedArr.length - 1))));
+    return sortedArr[idx];
+}
+
+// Deterministic portfolio value at retirement (no randomness) — used for SWR
+// monthly-income figures so they're stable across runs.
+function deterministicPortfolioAtRetirement(params) {
+    let portfolio = params.startingPortfolio;
+    for (let age = params.currentAge; age < params.retirementAge; age++) {
+        portfolio *= (1 + params.preReturn);
+    }
+    return portfolio;
+}
+
+router.get('/:id/monte-carlo', requireAuth, async (req, res) => {
+    try {
+        const result = await query(
+            `SELECT ${SCENARIO_COLUMNS} FROM retirement_scenarios WHERE id = $1 AND user_id = $2`,
+            [req.params.id, req.user.id]
+        );
+        if (!result.rowCount) {
+            return res.status(404).json({ error: 'Scenario not found' });
+        }
+
+        const scenario = { ...result.rows[0] };
+        if (scenario.starting_portfolio === null) {
+            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id);
+        }
+        const params = normalizeScenario(scenario);
+        const numYears = params.lifeExpectancy - params.currentAge + 1;
+        const NUM_SIMS = 1000;
+
+        const shocks = generateShocks(NUM_SIMS, numYears);
+        const paths = shocks.map((row) => simulatePath(params, row));
+
+        const endValues = paths.map((p) => p.values[p.values.length - 1]).sort((a, b) => a - b);
+        const successCount = paths.filter((p) => p.runOutAge === null).length;
+
+        const runsOutBefore = {};
+        for (const age of [70, 75, 80, 85, 90]) {
+            if (age > params.lifeExpectancy) continue;
+            const count = paths.filter((p) => p.runOutAge !== null && p.runOutAge < age).length;
+            runsOutBefore[`age${age}`] = Math.round((count / NUM_SIMS) * 1000) / 10;
+        }
+
+        const currentYear = new Date().getFullYear();
+        const fanChartData = [];
+        for (let y = 0; y < numYears; y++) {
+            const yearValues = paths.map((p) => p.values[y]).sort((a, b) => a - b);
+            fanChartData.push({
+                year: currentYear + y,
+                age: params.currentAge + y,
+                p10: Math.round(percentile(yearValues, 10)),
+                p25: Math.round(percentile(yearValues, 25)),
+                p50: Math.round(percentile(yearValues, 50)),
+                p75: Math.round(percentile(yearValues, 75)),
+                p90: Math.round(percentile(yearValues, 90)),
+            });
+        }
+
+        return res.json({
+            numSimulations: NUM_SIMS,
+            successRate: Math.round((successCount / NUM_SIMS) * 1000) / 10,
+            medianEndValue: Math.round(percentile(endValues, 50)),
+            percentile10: Math.round(percentile(endValues, 10)),
+            percentile25: Math.round(percentile(endValues, 25)),
+            percentile50: Math.round(percentile(endValues, 50)),
+            percentile75: Math.round(percentile(endValues, 75)),
+            percentile90: Math.round(percentile(endValues, 90)),
+            runsOutBefore,
+            fanChartData,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Monte Carlo simulation failed' });
+    }
+});
+
+router.get('/:id/safe-withdrawal-rate', requireAuth, async (req, res) => {
+    try {
+        const result = await query(
+            `SELECT ${SCENARIO_COLUMNS} FROM retirement_scenarios WHERE id = $1 AND user_id = $2`,
+            [req.params.id, req.user.id]
+        );
+        if (!result.rowCount) {
+            return res.status(404).json({ error: 'Scenario not found' });
+        }
+
+        const scenario = { ...result.rows[0] };
+        if (scenario.starting_portfolio === null) {
+            scenario.starting_portfolio = await liquidPortfolioTotal(req.user.id);
+        }
+        const params = normalizeScenario(scenario);
+        const numYears = params.lifeExpectancy - params.currentAge + 1;
+        const NUM_SIMS = 1000;
+
+        const shocks = generateShocks(NUM_SIMS, numYears);
+        const successRateFor = (ratePct) => {
+            const rate = ratePct / 100;
+            let success = 0;
+            for (const row of shocks) {
+                if (simulatePath(params, row, rate).runOutAge === null) success++;
+            }
+            return (success / NUM_SIMS) * 100;
+        };
+
+        // Success falls monotonically as the rate rises (same shocks reused),
+        // so bisection finds the highest rate that still clears the target.
+        const maxRateForSuccess = (targetPct) => {
+            let lo = 1;
+            let hi = 10;
+            if (successRateFor(hi) >= targetPct) return hi;
+            if (successRateFor(lo) < targetPct) return lo;
+            for (let i = 0; i < 12; i++) {
+                const mid = (lo + hi) / 2;
+                if (successRateFor(mid) >= targetPct) lo = mid;
+                else hi = mid;
+            }
+            return Math.round(lo * 10) / 10;
+        };
+
+        const portfolioAtRetirement = deterministicPortfolioAtRetirement(params);
+        const monthlyFor = (ratePct) => Math.round((portfolioAtRetirement * ratePct / 100) / 12);
+
+        const safeRate = maxRateForSuccess(95);
+        const conservativeRate = maxRateForSuccess(99);
+        const aggressiveRate = maxRateForSuccess(85);
+
+        const rateTable = [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0].map((rate) => ({
+            rate,
+            successRate: Math.round(successRateFor(rate) * 10) / 10,
+            monthlyIncome: monthlyFor(rate),
+        }));
+
+        return res.json({
+            safeRate,
+            conservativeRate,
+            aggressiveRate,
+            safeMonthlyIncome: monthlyFor(safeRate),
+            conservativeMonthlyIncome: monthlyFor(conservativeRate),
+            aggressiveMonthlyIncome: monthlyFor(aggressiveRate),
+            portfolioAtRetirement: Math.round(portfolioAtRetirement),
+            rateTable,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'SWR calculation failed' });
+    }
+});
 
 router.get('/', requireAuth, async (req, res) => {
     try {

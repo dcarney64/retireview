@@ -87,6 +87,17 @@ If this wasn't you, no action is needed — your password was not compromised.`,
     await send(toEmail, subjects[alertType], { text: messages[alertType] });
 }
 
+// Generic HTML email — used by the digest service and future app emails.
+// In DEV_MODE_LOG_OTP mode the email is logged instead of sent.
+export async function sendHtmlEmail(toEmail, subject, html) {
+    if (process.env.DEV_MODE_LOG_OTP === 'true') {
+        console.log(`[email] DEV_MODE_LOG_OTP — would send "${subject}" to ${toEmail}`);
+        return { logged: true };
+    }
+    await send(toEmail, subject, { html });
+    return { sent: true };
+}
+
 export async function sendNewIPAlert(toEmail, ipAddress) {
     if (process.env.DEV_MODE_LOG_OTP === 'true') {
         console.log(`[2FA] DEV_MODE_LOG_OTP — new IP alert for ${toEmail}: ${ipAddress}`);
