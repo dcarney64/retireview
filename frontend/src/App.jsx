@@ -14,6 +14,7 @@ import Dashboard from './pages/Dashboard';
 // Household page replaced by Settings → Household Members (v0.5.0)
 import Import from './pages/Import';
 import CashFlow from './pages/CashFlow';
+import GettingStarted from './pages/GettingStarted';
 import Income from './pages/Income';
 import NetWorth from './pages/NetWorth';
 import OtherAssets from './pages/OtherAssets';
@@ -55,6 +56,7 @@ export default function App() {
 
         <Route path="/" element={<AppShell><Page><Dashboard /></Page></AppShell>} />
         {/* ADD YOUR APP ROUTES BELOW THIS LINE */}
+        <Route path="/getting-started" element={<AppShell><Page><GettingStarted /></Page></AppShell>} />
         <Route path="/broker-settings" element={<AppShell><Page><BrokerSettings /></Page></AppShell>} />
         {/* Legacy redirect — keeps old /connections bookmarks working */}
         <Route path="/connections" element={<AppShell><Page><Connections /></Page></AppShell>} />

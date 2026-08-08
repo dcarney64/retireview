@@ -22,6 +22,55 @@ import { ACCOUNT_TYPES, formatCurrency, typeColor, typeLabel } from '../lib/acco
 import { useActiveProfile } from '../store/useActiveProfile';
 import { useProfileStore } from '../store/profileStore';
 
+// ─── Setup progress card (shown only when minimum setup is incomplete) ────────
+function SetupCard({ status }) {
+  const nextStep =
+    status.steps.find((s) => s.minimumRequired && s.status !== 'complete') ||
+    status.steps.find((s) => s.status !== 'complete');
+
+  return (
+    <Card className="p-5 border-sky-900/50 bg-sky-950/20">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-base font-semibold text-slate-100">
+            👋 Welcome! Finish setting up your retirement picture
+          </h3>
+          <div className="mt-3 mb-1 flex items-center justify-between text-xs">
+            <span className="text-slate-400">Progress</span>
+            <span className="font-medium text-slate-300">{status.overallPct}%</span>
+          </div>
+          <div
+            className="h-2 overflow-hidden rounded-full bg-slate-800"
+            role="progressbar"
+            aria-valuenow={status.overallPct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="h-full rounded-full bg-sky-500 transition-all"
+              style={{ width: `${status.overallPct}%` }}
+            />
+          </div>
+          {nextStep && (
+            <p className="mt-2 text-xs text-slate-400">
+              Next step:{' '}
+              <Link to={nextStep.path} className="text-sky-400 hover:underline">
+                {nextStep.label}
+              </Link>
+            </p>
+          )}
+        </div>
+        <Link
+          to="/getting-started"
+          className="shrink-0 rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 transition-colors"
+        >
+          Set up →
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
 const CARD_SURFACE = '#0f172a'; // slate-900 — segment gaps ring in the surface color
 const SERIES_BLUE = '#3987e5';
 const RE_GREEN = '#199e70'; // real estate slice — same validated step used on Net Worth page
@@ -123,6 +172,12 @@ export default function Dashboard() {
     queryKey: ['cashflow-summary', pid],
     queryFn: async () => (await apiClient.get('/cashflow/summary')).data,
   });
+  const setupQuery = useQuery({
+    queryKey: ['setup-status', pid],
+    queryFn: async () => (await apiClient.get('/setup/status')).data,
+    staleTime: 60_000,
+    retry: false,
+  });
   const activeScenario = (scenariosQuery.data || []).find((s) => s.is_active) || null;
   const projectionQuery = useQuery({
     queryKey: ['projection', activeScenario?.id, activeScenario?.updated_at, pid],
@@ -194,6 +249,11 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Setup progress card — hidden once minimum setup is done */}
+      {setupQuery.data && !setupQuery.data.isMinimumComplete && (
+        <SetupCard status={setupQuery.data} />
+      )}
+
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="text-sm text-slate-400">Total net worth</div>

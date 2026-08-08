@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query';
 import {
   ArrowLeftRight,
   Briefcase,
@@ -6,6 +7,7 @@ import {
   LineChart,
   Receipt,
   RefreshCw,
+  Rocket,
   Target,
   TrendingUp,
   Upload,
@@ -13,6 +15,8 @@ import {
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
+import apiClient from '../../api/client';
+import { useActiveProfile } from '../../store/useActiveProfile';
 import { useAuthStore } from '../../store/authStore';
 
 const mainItems = [
@@ -42,9 +46,40 @@ function isActivePath(pathname, itemPath) {
   return pathname === itemPath || pathname.startsWith(`${itemPath}/`);
 }
 
+// Badge shown next to Getting Started in the sidebar
+function SetupBadge({ status }) {
+  if (!status) return null;
+  const { overallPct, isMinimumComplete } = status;
+  if (overallPct >= 100) return null;
+
+  if (isMinimumComplete) {
+    return (
+      <span className="ml-auto rounded-full border border-emerald-700 bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400">
+        ✓
+      </span>
+    );
+  }
+
+  return (
+    <span className="ml-auto rounded-full border border-amber-700 bg-amber-900/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">
+      {overallPct}%
+    </span>
+  );
+}
+
 export default function Sidebar() {
   const location = useLocation();
   const user     = useAuthStore((state) => state.user);
+  const pid      = useActiveProfile();
+
+  // Fetch setup status for the sidebar badge.
+  // Shares the same query key as the Getting Started page — no extra network call.
+  const { data: setupStatus } = useQuery({
+    queryKey:  ['setup-status', pid],
+    queryFn:   async () => (await apiClient.get('/setup/status')).data,
+    staleTime: 60_000,
+    retry:     false,
+  });
 
   const renderLink = (item) => {
     const active = isActivePath(location.pathname, item.path);
@@ -63,9 +98,25 @@ export default function Sidebar() {
     );
   };
 
+  const gsActive = isActivePath(location.pathname, '/getting-started');
+
   return (
     <aside className="w-72 shrink-0 border-r border-slate-800 bg-slate-900 p-4">
       <nav className="space-y-1">
+        {/* Getting Started — always pinned at top with live badge */}
+        <Link
+          to="/getting-started"
+          className={`flex items-center gap-2.5 rounded-md px-3 py-2 text-sm ${
+            gsActive ? 'bg-sky-500/20 text-sky-300' : 'text-slate-300 hover:bg-slate-800'
+          }`}
+        >
+          <Rocket size={16} className="shrink-0" />
+          Getting Started
+          <SetupBadge status={setupStatus} />
+        </Link>
+
+        <div className="my-1 h-px bg-slate-800" />
+
         {mainItems.map(renderLink)}
       </nav>
 

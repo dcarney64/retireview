@@ -40,6 +40,7 @@ import settingsRoutes from './routes/settings.js';
 import snapshotsRoutes from './routes/snapshots.js';
 import snaptradeRoutes from './routes/snaptrade.js';
 import syncRoutes from './routes/sync.js';
+import setupRoutes from './routes/setup.js';
 import transfersRoutes from './routes/transfers.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -124,6 +125,7 @@ app.use('/api/recurring-income', recurringIncomeRoutes);
 app.use('/api/cashflow', cashflowRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/sync',   syncRoutes);
+app.use('/api/setup',  setupRoutes);
 
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
