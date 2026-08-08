@@ -267,13 +267,6 @@ CREATE TABLE IF NOT EXISTS composer_credentials (
 CREATE INDEX IF NOT EXISTS idx_composer_creds_user ON composer_credentials (user_id);
 
 -- ============================================================
--- CSV IMPORT — source tag on transactions
--- Distinguishes snaptrade, csv_import, and manual rows.
--- ============================================================
-ALTER TABLE account_transactions
-  ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'snaptrade';
-
--- ============================================================
 -- CSV IMPORT LOG
 -- One row per file import; stores counts and warnings so the
 -- Import page can show "Last imported: Aug 5 2026 · 312 txns".
@@ -334,6 +327,13 @@ CREATE INDEX IF NOT EXISTS idx_transactions_account
   ON account_transactions (account_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date
   ON account_transactions (account_id, transacted_at DESC);
+
+-- ============================================================
+-- CSV IMPORT — source tag on transactions
+-- Distinguishes snaptrade, csv_import, and manual rows.
+-- ============================================================
+ALTER TABLE account_transactions
+  ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'snaptrade';
 
 -- ============================================================
 -- PORTFOLIO HISTORY
@@ -468,14 +468,6 @@ CREATE TABLE IF NOT EXISTS retirement_scenarios (
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_retirement_scenarios_user ON retirement_scenarios(user_id);
-
--- Seed a default scenario for users that have none yet
-INSERT INTO retirement_scenarios (user_id, name, is_active)
-SELECT u.id, 'Moderate', true
-FROM users u
-WHERE NOT EXISTS (
-  SELECT 1 FROM retirement_scenarios rs WHERE rs.user_id = u.id
-);
 
 -- ============================================================
 -- INCOME EVENTS
@@ -694,6 +686,17 @@ UPDATE account_transfers a
   FROM profiles p
   WHERE p.user_id = a.user_id AND p.is_primary = true AND a.profile_id IS NULL;
 
+-- Seed a default 'Moderate' scenario for any user that has a primary profile
+-- but no scenario yet.  Runs here (after profile_id column exists and profiles
+-- are populated) so every INSERT can include a valid profile_id.
+INSERT INTO retirement_scenarios (user_id, profile_id, name, is_active)
+SELECT u.id, p.id, 'Moderate', true
+FROM users u
+JOIN profiles p ON p.user_id = u.id AND p.is_primary = true
+WHERE NOT EXISTS (
+  SELECT 1 FROM retirement_scenarios rs WHERE rs.user_id = u.id
+);
+
 -- 5. ENFORCE NOT NULL on critical tables (safe after migration above)
 ALTER TABLE accounts          ALTER COLUMN profile_id SET NOT NULL;
 ALTER TABLE properties        ALTER COLUMN profile_id SET NOT NULL;
@@ -846,3 +849,28 @@ ALTER TABLE properties
 
 ALTER TABLE other_assets
   ADD COLUMN IF NOT EXISTS include_in_calculations BOOLEAN NOT NULL DEFAULT true;
+
+-- ============================================================
+-- ACCOUNTS — auto-fill profile_id safety trigger
+-- When a sync service INSERT omits profile_id, this trigger
+-- automatically fills it from the user's primary profile so the
+-- NOT NULL constraint is never violated by legacy or 3rd-party
+-- insert paths.  The explicit profile_id wins when provided.
+-- ============================================================
+CREATE OR REPLACE FUNCTION accounts_auto_profile_id()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.profile_id IS NULL THEN
+    SELECT id INTO NEW.profile_id
+    FROM profiles
+    WHERE user_id = NEW.user_id AND is_primary = true
+    LIMIT 1;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_accounts_auto_profile ON accounts;
+CREATE TRIGGER trg_accounts_auto_profile
+  BEFORE INSERT ON accounts
+  FOR EACH ROW EXECUTE FUNCTION accounts_auto_profile_id();

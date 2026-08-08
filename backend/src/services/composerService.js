@@ -217,6 +217,14 @@ export async function syncComposerAccountsForUser(userId) {
     const keySecret = decryptSecret(key_secret_enc);
     const composerAccounts = await fetchComposerAccounts(key_id, keySecret);
 
+    // Resolve the primary profile so we can stamp it on new account rows.
+    const profileRes = await query(
+        `SELECT id FROM profiles WHERE user_id = $1 AND is_primary = true LIMIT 1`,
+        [userId]
+    );
+    const profileId = profileRes.rows[0]?.id;
+    if (!profileId) throw new Error('No primary profile found for user');
+
     let accountsUpdated = 0;
     const today = new Date().toISOString().slice(0, 10);
 
@@ -224,15 +232,15 @@ export async function syncComposerAccountsForUser(userId) {
         // Upsert account row and get back its DB id.
         const upsertResult = await query(
             `INSERT INTO accounts
-               (user_id, name, type, balance, source, external_id, institution, last_synced_at, updated_at)
-             VALUES ($1, $2, 'composer', $3, 'composer', $4, 'Composer', NOW(), NOW())
+               (user_id, profile_id, name, type, balance, source, external_id, institution, last_synced_at, updated_at)
+             VALUES ($1, $2, $3, 'composer', $4, 'composer', $5, 'Composer', NOW(), NOW())
              ON CONFLICT (user_id, external_id) WHERE external_id IS NOT NULL
              DO UPDATE SET
                balance        = EXCLUDED.balance,
                last_synced_at = NOW(),
                updated_at     = NOW()
              RETURNING id`,
-            [userId, ca.name, ca.value, ca.id]
+            [userId, profileId, ca.name, ca.value, ca.id]
         );
         accountsUpdated++;
 

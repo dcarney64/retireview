@@ -67,7 +67,7 @@ export default function TopBar() {
   const activeProfileId = useProfileStore((state) => state.activeProfileId);
   const setActiveProfile = useProfileStore((state) => state.setActiveProfile);
 
-  const showSwitcher = profiles.length > 1;
+  const showSwitcher = profiles.length >= 1;
 
   // Close on outside click
   useEffect(() => {

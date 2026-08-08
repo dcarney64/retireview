@@ -277,6 +277,14 @@ async function syncTransactionsForAccount(userId, internalAccountId, externalAcc
 export async function syncAccountsForUser(userId) {
     const { accounts, failures } = await fetchBrokerageAccounts();
 
+    // Resolve the primary profile so we can stamp it on new account rows.
+    const profileRes = await query(
+        `SELECT id FROM profiles WHERE user_id = $1 AND is_primary = true LIMIT 1`,
+        [userId]
+    );
+    const profileId = profileRes.rows[0]?.id;
+    if (!profileId) throw new Error('No primary profile found for user');
+
     let created          = 0;
     let updated          = 0;
     let txInserted       = 0;
@@ -302,10 +310,10 @@ export async function syncAccountsForUser(userId) {
         } else {
             const newRow = await query(
                 `INSERT INTO accounts
-                   (user_id, name, type, balance, notes, source, external_id, institution, last_synced_at)
-                 VALUES ($1, $2, 'brokerage', $3, NULL, 'snaptrade', $4, $5, now())
+                   (user_id, profile_id, name, type, balance, notes, source, external_id, institution, last_synced_at)
+                 VALUES ($1, $2, $3, 'brokerage', $4, NULL, 'snaptrade', $5, $6, now())
                  RETURNING id`,
-                [userId, account.name, account.total, account.externalId, account.institution]
+                [userId, profileId, account.name, account.total, account.externalId, account.institution]
             );
             internalId = newRow.rows[0].id;
             created   += 1;

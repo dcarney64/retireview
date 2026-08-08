@@ -78,3 +78,8 @@ echo "────────────────────────�
 echo "URLs:"
 echo "  Frontend  →  http://localhost:5178"
 echo "  Backend   →  http://localhost:8006/health"
+
+echo ""
+echo "Last backup:"
+ls -lht ~/projects/retireview/backups/*.sql.gz \
+  2>/dev/null | head -1 || echo "  No backups yet!"

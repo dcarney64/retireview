@@ -18,7 +18,7 @@ apiClient.interceptors.request.use((config) => {
   // Attach the active profile header so every API call is automatically scoped.
   // Routes that don't care about profiles simply ignore it.
   const profileId = useProfileStore.getState().activeProfileId;
-  config.headers['X-Profile-Id'] = profileId === null ? 'combined' : String(profileId);
+  config.headers['X-Profile-Id'] = profileId ? String(profileId) : 'primary';
 
   return config;
 });

@@ -36,16 +36,15 @@ export const useProfileStore = create((set, get) => ({
       const { data } = await apiClient.get('/profiles');
       const profiles = data || [];
 
-      // Resolve active profile: prefer stored value if still valid
-      const storedId = loadStoredProfileId();
-      const stillValid = storedId === null || profiles.some((p) => p.id === storedId);
+      let activeProfileId = get().activeProfileId;
 
-      let activeProfileId;
-      if (stillValid) {
-        activeProfileId = storedId;
-      } else {
+      if (!activeProfileId && profiles.length > 0) {
+        // Nothing selected (first visit or cleared storage) — auto-select primary
+        const primary = profiles.find((p) => p.isPrimary) || profiles[0];
+        activeProfileId = primary.id;
+      } else if (activeProfileId && !profiles.some((p) => p.id === activeProfileId)) {
         // Stored profile was deleted — fall back to primary
-        const primary = profiles.find((p) => p.isPrimary);
+        const primary = profiles.find((p) => p.isPrimary) || profiles[0];
         activeProfileId = primary?.id ?? null;
       }
 
