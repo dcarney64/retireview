@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Building2, Home, LandPlot, Warehouse } from 'lucide-react';
 import { useState } from 'react';
 
-import IncludeToggle from '../components/shared/IncludeToggle';
 import {
   CartesianGrid,
   Line,
@@ -371,10 +370,11 @@ function Stat({ label, value, sub, subClass = 'text-slate-500' }) {
   );
 }
 
-function PropertyCard({ property, onEdit, onUpdateValue, onArchive, onToggle }) {
+function PropertyCard({ property, onEdit, onUpdateValue, onArchive, onToggle, onToggleCashFlow }) {
   const [showHistory, setShowHistory] = useState(false);
 
-  const included = property.include_in_calculations !== false;
+  const included       = property.include_in_calculations !== false;
+  const includedInCF   = property.include_in_cash_flow    !== false;
   const meta = TYPE_META[property.property_type] || TYPE_META.other;
   const value = Number(property.estimated_value);
   const mortgage = Number(property.mortgage_balance) || 0;
@@ -416,8 +416,30 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive, onToggle }) 
             {property.address ? <div className="text-sm text-slate-400">{property.address}</div> : null}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <IncludeToggle included={included} onToggle={(val) => onToggle(property, val)} />
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Two-axis include toggles */}
+          <div className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-800/50 px-2.5 py-1.5 text-xs">
+            <span className="text-slate-500 shrink-0">Include in:</span>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={included}
+                onChange={() => onToggle(property, !included)}
+                className="h-3.5 w-3.5 cursor-pointer accent-emerald-500"
+              />
+              <span className={included ? 'text-slate-300' : 'text-slate-600'}>Net Worth</span>
+            </label>
+            <span className="text-slate-700">·</span>
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includedInCF}
+                onChange={() => onToggleCashFlow(property, !includedInCF)}
+                className="h-3.5 w-3.5 cursor-pointer accent-sky-500"
+              />
+              <span className={includedInCF ? 'text-slate-300' : 'text-slate-600'}>Cash Flow</span>
+            </label>
+          </div>
           <span className="rounded-full border border-slate-700 px-2.5 py-0.5 text-xs text-slate-300">{meta.label}</span>
         </div>
       </div>
@@ -525,11 +547,16 @@ export default function RealEstate() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: async ({ id, included }) =>
-      apiClient.patch(`/properties/${id}/toggle`, { included }),
-    onSuccess: () => {
+    mutationFn: async ({ id, field, value }) =>
+      apiClient.patch(`/properties/${id}/toggle`, { field, value }),
+    onSuccess: (_data, { field }) => {
       queryClient.invalidateQueries({ queryKey: ['properties'] });
-      queryClient.invalidateQueries({ queryKey: ['net-worth'] });
+      // Net Worth toggle affects net-worth totals; Cash Flow toggle affects cashflow
+      if (field === 'include_in_net_worth') {
+        queryClient.invalidateQueries({ queryKey: ['net-worth'] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['cashflow-summary'] });
+      }
     },
   });
 
@@ -599,7 +626,8 @@ export default function RealEstate() {
               onEdit={() => setModal({ mode: 'edit', property })}
               onUpdateValue={() => setModal({ mode: 'value', property })}
               onArchive={() => setArchiveTarget(property)}
-              onToggle={(p, included) => toggleMutation.mutate({ id: p.id, included })}
+              onToggle={(p, value) => toggleMutation.mutate({ id: p.id, field: 'include_in_net_worth', value })}
+              onToggleCashFlow={(p, value) => toggleMutation.mutate({ id: p.id, field: 'include_in_cash_flow', value })}
             />
           ))}
         </div>

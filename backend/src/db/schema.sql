@@ -846,6 +846,10 @@ ALTER TABLE recurring_income
 -- ============================================================
 ALTER TABLE properties
   ADD COLUMN IF NOT EXISTS include_in_calculations BOOLEAN NOT NULL DEFAULT true;
+-- include_in_cash_flow: when false, mortgage payment and rental income for this
+-- property are excluded from the Cash Flow page totals.
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS include_in_cash_flow BOOLEAN NOT NULL DEFAULT true;
 
 ALTER TABLE other_assets
   ADD COLUMN IF NOT EXISTS include_in_calculations BOOLEAN NOT NULL DEFAULT true;

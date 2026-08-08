@@ -113,6 +113,7 @@ router.get('/expenses', requireAuth, requireProfile, async (req, res) => {
                AND ($2::int IS NULL OR p.profile_id = $2)
                AND p.mortgage_payment > 0
                AND p.archived_at IS NULL
+               AND p.include_in_cash_flow = true
 
              UNION ALL
 
@@ -340,6 +341,7 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
                AND ($2::int IS NULL OR p.profile_id = $2)
                AND p.mortgage_payment > 0
                AND p.archived_at IS NULL
+               AND p.include_in_cash_flow = true
 
              UNION ALL
 

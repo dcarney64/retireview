@@ -13,7 +13,7 @@ const PROPERTY_COLUMNS = `
     purchase_date, mortgage_balance, mortgage_payment, mortgage_rate,
     mortgage_maturity_date, rental_income, rental_frequency, notes,
     is_primary_residence, ownership_pct, commission_rate, sale_costs,
-    include_in_calculations, archived_at, created_at, updated_at`;
+    include_in_calculations, include_in_cash_flow, archived_at, created_at, updated_at`;
 
 function annualRentalIncome(property) {
     const rental = Number(property.rental_income) || 0;
@@ -290,19 +290,46 @@ router.post('/:id/value-update', requireAuth, requireProfile, async (req, res) =
     }
 });
 
-// PATCH /api/properties/:id/toggle — flip include_in_calculations
+// PATCH /api/properties/:id/toggle — flip a boolean include flag
+//
+// New API:    { field: 'include_in_net_worth' | 'include_in_cash_flow', value: boolean }
+// Legacy API: { included: boolean }  → maps to include_in_calculations (net worth)
+const TOGGLE_FIELD_MAP = {
+    include_in_net_worth: 'include_in_calculations',
+    include_in_cash_flow: 'include_in_cash_flow',
+};
+
 router.patch('/:id/toggle', requireAuth, requireProfile, async (req, res) => {
     try {
-        const { included } = req.body ?? {};
-        if (typeof included !== 'boolean') {
-            return res.status(400).json({ error: 'included must be a boolean' });
+        const { included, field, value } = req.body ?? {};
+
+        let column, boolValue;
+        if (field !== undefined) {
+            column = TOGGLE_FIELD_MAP[field];
+            if (!column) {
+                return res.status(400).json({
+                    error: `field must be one of: ${Object.keys(TOGGLE_FIELD_MAP).join(', ')}`,
+                });
+            }
+            if (typeof value !== 'boolean') {
+                return res.status(400).json({ error: 'value must be a boolean' });
+            }
+            boolValue = value;
+        } else {
+            // Legacy path — { included: boolean } → include_in_calculations
+            if (typeof included !== 'boolean') {
+                return res.status(400).json({ error: 'included must be a boolean' });
+            }
+            column   = 'include_in_calculations';
+            boolValue = included;
         }
+
         const updated = await query(
             `UPDATE properties
-             SET include_in_calculations = $3, updated_at = NOW()
+             SET ${column} = $3, updated_at = NOW()
              WHERE id = $1 AND user_id = $2
              RETURNING ${PROPERTY_COLUMNS}`,
-            [req.params.id, req.user.id, included]
+            [req.params.id, req.user.id, boolValue]
         );
         if (!updated.rowCount) {
             return res.status(404).json({ error: 'Property not found' });
