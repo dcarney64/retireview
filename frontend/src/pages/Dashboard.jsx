@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 
 import apiClient from '../api/client';
+import ProgressBar from '../components/shared/ProgressBar';
 import Skeleton from '../components/shared/Skeleton';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
@@ -24,9 +25,12 @@ import { useProfileStore } from '../store/profileStore';
 
 // ─── Setup progress card (shown only when minimum setup is incomplete) ────────
 function SetupCard({ status }) {
-  const nextStep =
-    status.steps.find((s) => s.minimumRequired && s.status !== 'complete') ||
-    status.steps.find((s) => s.status !== 'complete');
+  // Single-pass: prefer minimumRequired steps, fall back to any incomplete step.
+  const nextStep = status.steps.reduce((best, s) => {
+    if (s.status === 'complete') return best;
+    if (!best || (s.minimumRequired && !best.minimumRequired)) return s;
+    return best;
+  }, null);
 
   return (
     <Card className="p-5 border-sky-900/50 bg-sky-950/20">
@@ -39,18 +43,7 @@ function SetupCard({ status }) {
             <span className="text-slate-400">Progress</span>
             <span className="font-medium text-slate-300">{status.overallPct}%</span>
           </div>
-          <div
-            className="h-2 overflow-hidden rounded-full bg-slate-800"
-            role="progressbar"
-            aria-valuenow={status.overallPct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
-            <div
-              className="h-full rounded-full bg-sky-500 transition-all"
-              style={{ width: `${status.overallPct}%` }}
-            />
-          </div>
+          <ProgressBar pct={status.overallPct} height="h-2" />
           {nextStep && (
             <p className="mt-2 text-xs text-slate-400">
               Next step:{' '}

@@ -8,11 +8,22 @@ const router = Router();
 
 // ─── Core helper ─────────────────────────────────────────────────────────────
 
+/** Extract a COUNT result without repeating Number(result.rows[0].count) six times. */
+const countFrom = (result) => Number(result.rows[0].count);
+
 /**
  * Compute setup status for a specific profile.
  * Returns null if the profile doesn't exist / doesn't belong to userId.
+ *
+ * knownProfilesCount — pass the total number of profiles when the caller
+ * already has this value (e.g. /all-profiles) to avoid a redundant DB round-trip.
  */
-async function buildStatus(userId, profileId) {
+async function buildStatus(userId, profileId, knownProfilesCount = null) {
+    // When the caller already knows the profile count, skip the extra DB query.
+    const profilesCountPromise = knownProfilesCount !== null
+        ? Promise.resolve({ rows: [{ count: knownProfilesCount }] })
+        : query(`SELECT COUNT(*) AS count FROM profiles WHERE user_id = $1`, [userId]);
+
     const [
         profileResult,
         accountsResult,
@@ -60,24 +71,21 @@ async function buildStatus(userId, profileId) {
              LIMIT 1`,
             [userId, profileId],
         ),
-        query(
-            `SELECT COUNT(*) AS count FROM profiles WHERE user_id = $1`,
-            [userId],
-        ),
+        profilesCountPromise,
     ]);
 
     if (!profileResult.rowCount) return null;
 
     const profile          = profileResult.rows[0];
-    const accountsCount    = Number(accountsResult.rows[0].count);
-    const propertiesCount  = Number(propertiesResult.rows[0].count);
-    const otherAssetsCount = Number(otherAssetsResult.rows[0].count);
-    const incomeCount      = Number(incomeResult.rows[0].count);
-    const expensesCount    = Number(expensesResult.rows[0].count);
-    const profilesCount    = Number(profilesCountResult.rows[0].count);
+    const accountsCount    = countFrom(accountsResult);
+    const propertiesCount  = countFrom(propertiesResult);
+    const otherAssetsCount = countFrom(otherAssetsResult);
+    const incomeCount      = countFrom(incomeResult);
+    const expensesCount    = countFrom(expensesResult);
+    const profilesCount    = countFrom(profilesCountResult);
 
     // Retirement goal: empty → partial → complete
-    const scenario = scenariosResult.rows[0] || null;
+    const scenario = scenariosResult.rows[0];
     let retirementStatus;
     let retirementCountLabel;
     if (!scenario) {
@@ -102,7 +110,6 @@ async function buildStatus(userId, profileId) {
                 ? `${accountsCount} account${accountsCount === 1 ? '' : 's'} connected`
                 : 'No accounts added',
             path:            '/accounts',
-            required:        false,
             minimumRequired: true,
         },
         {
@@ -115,7 +122,6 @@ async function buildStatus(userId, profileId) {
                 ? `${propertiesCount} propert${propertiesCount === 1 ? 'y' : 'ies'} added`
                 : 'No properties added',
             path:            '/real-estate',
-            required:        false,
             minimumRequired: true,
         },
         {
@@ -128,7 +134,6 @@ async function buildStatus(userId, profileId) {
                 ? `${otherAssetsCount} asset${otherAssetsCount === 1 ? '' : 's'} added`
                 : 'No assets added',
             path:            '/other-assets',
-            required:        false,
             minimumRequired: false,
         },
         {
@@ -141,7 +146,6 @@ async function buildStatus(userId, profileId) {
                 ? `${incomeCount} income source${incomeCount === 1 ? '' : 's'} configured`
                 : 'No income sources added',
             path:            '/income',
-            required:        false,
             minimumRequired: false,
         },
         {
@@ -154,7 +158,6 @@ async function buildStatus(userId, profileId) {
                 ? `${expensesCount} expense${expensesCount === 1 ? '' : 's'} added`
                 : 'No expenses added',
             path:            '/cash-flow',
-            required:        false,
             minimumRequired: false,
         },
         {
@@ -165,7 +168,6 @@ async function buildStatus(userId, profileId) {
             count:           scenario ? 1 : 0,
             countLabel:      retirementCountLabel,
             path:            '/retirement',
-            required:        false,
             minimumRequired: true,
         },
         {
@@ -178,7 +180,6 @@ async function buildStatus(userId, profileId) {
                 ? `${profilesCount - 1} household member${profilesCount - 1 === 1 ? '' : 's'} added`
                 : 'No household members added',
             path:            '/settings',
-            required:        false,
             minimumRequired: false,
         },
     ];
@@ -221,8 +222,10 @@ router.get('/all-profiles', requireAuth, async (req, res) => {
             `SELECT id FROM profiles WHERE user_id = $1 ORDER BY is_primary DESC, created_at ASC`,
             [req.user.id],
         );
+        // Pass the count we already have so each buildStatus call skips its own COUNT query.
+        const totalProfiles = profilesResult.rows.length;
         const statuses = await Promise.all(
-            profilesResult.rows.map((p) => buildStatus(req.user.id, p.id)),
+            profilesResult.rows.map((p) => buildStatus(req.user.id, p.id, totalProfiles)),
         );
         return res.json(statuses.filter(Boolean));
     } catch (error) {

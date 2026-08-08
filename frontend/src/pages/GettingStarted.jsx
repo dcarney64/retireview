@@ -11,10 +11,32 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import apiClient from '../api/client';
 import { Card } from '../components/ui/card';
+import ProgressBar from '../components/shared/ProgressBar';
 import { useActiveProfile } from '../store/useActiveProfile';
 import { useProfileStore } from '../store/profileStore';
 
 const SKIP_KEY = 'retireview:setup_skipped';
+
+// ─── Status → style map ───────────────────────────────────────────────────────
+// Single place to update when statuses or styles change.
+
+const STATUS_STYLES = {
+  complete: {
+    borderClass: 'border-emerald-800/40',
+    labelClass:  'text-emerald-300',
+    actionLabel: 'Manage',
+  },
+  partial: {
+    borderClass: 'border-amber-800/50',
+    labelClass:  'text-amber-200',
+    actionLabel: 'Complete',
+  },
+  empty: {
+    borderClass: 'border-slate-800',
+    labelClass:  'text-slate-200',
+    actionLabel: 'Start',
+  },
+};
 
 // ─── Small helpers ────────────────────────────────────────────────────────────
 
@@ -26,40 +48,11 @@ function StatusIcon({ status, size = 20 }) {
   return <Square size={size} className="shrink-0 text-slate-600" />;
 }
 
-function ProgressBar({ pct, colorClass = 'bg-sky-500' }) {
-  return (
-    <div
-      className="h-2.5 overflow-hidden rounded-full bg-slate-800"
-      role="progressbar"
-      aria-valuenow={Math.round(pct)}
-      aria-valuemin={0}
-      aria-valuemax={100}
-    >
-      <div
-        className={`h-full rounded-full transition-all duration-500 ${colorClass}`}
-        style={{ width: `${pct}%` }}
-      />
-    </div>
-  );
-}
-
 // ─── Step card ────────────────────────────────────────────────────────────────
 
 function StepCard({ step }) {
-  const actionLabel =
-    step.status === 'complete' ? 'Manage' :
-    step.status === 'partial'  ? 'Complete' :
-    'Start';
-
-  const borderClass =
-    step.status === 'complete' ? 'border-emerald-800/40' :
-    step.status === 'partial'  ? 'border-amber-800/50' :
-    'border-slate-800';
-
-  const labelClass =
-    step.status === 'complete' ? 'text-emerald-300' :
-    step.status === 'partial'  ? 'text-amber-200' :
-    'text-slate-200';
+  const { borderClass, labelClass, actionLabel } =
+    STATUS_STYLES[step.status] ?? STATUS_STYLES.empty;
 
   return (
     <div className={`flex items-start gap-4 rounded-lg border ${borderClass} bg-slate-900 px-4 py-3.5`}>
@@ -129,11 +122,8 @@ function HouseholdRow({ profileStatus, isCurrent, onSwitch }) {
 // ─── Unlock hints ─────────────────────────────────────────────────────────────
 
 function UnlockSection({ steps }) {
-  const incomeStep   = steps.find((s) => s.id === 'income');
-  const expensesStep = steps.find((s) => s.id === 'expenses');
-
-  const showIncome   = incomeStep?.status   !== 'complete';
-  const showExpenses = expensesStep?.status !== 'complete';
+  const showIncome   = steps.find((s) => s.id === 'income')?.status   !== 'complete';
+  const showExpenses = steps.find((s) => s.id === 'expenses')?.status !== 'complete';
 
   if (!showIncome && !showExpenses) return null;
 
@@ -179,6 +169,13 @@ function UnlockSection({ steps }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+const PAGE_HEADER = (
+  <div className="flex items-center gap-3">
+    <Rocket size={22} className="text-sky-400" />
+    <h1 className="text-2xl font-semibold text-slate-100">Getting Started</h1>
+  </div>
+);
+
 export default function GettingStarted() {
   const navigate         = useNavigate();
   const queryClient      = useQueryClient();
@@ -219,10 +216,7 @@ export default function GettingStarted() {
   if (statusQuery.isLoading) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <Rocket size={22} className="text-sky-400" />
-          <h1 className="text-2xl font-semibold">Getting Started</h1>
-        </div>
+        {PAGE_HEADER}
         <p className="text-sm text-slate-400">Loading your setup progress…</p>
       </div>
     );
@@ -231,10 +225,7 @@ export default function GettingStarted() {
   if (statusQuery.isError || !status) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <Rocket size={22} className="text-sky-400" />
-          <h1 className="text-2xl font-semibold">Getting Started</h1>
-        </div>
+        {PAGE_HEADER}
         <p className="text-sm text-rose-400">
           Failed to load setup status.{' '}
           <button
@@ -250,17 +241,13 @@ export default function GettingStarted() {
   }
 
   const hasMultipleProfiles = profiles.length > 1;
-  const otherProfiles = householdStatus.filter((p) => p.profileId !== pid);
 
   return (
     <div className="max-w-2xl space-y-8">
 
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div>
-        <div className="flex items-center gap-3">
-          <Rocket size={22} className="text-sky-400" />
-          <h1 className="text-2xl font-semibold text-slate-100">Getting Started</h1>
-        </div>
+        {PAGE_HEADER}
         <p className="mt-1 text-sm text-slate-400">
           {status.profileName}'s setup is{' '}
           <span className="font-medium text-slate-200">{status.overallPct}% complete</span>
@@ -342,21 +329,24 @@ export default function GettingStarted() {
             </div>
           )}
 
-          {otherProfiles.length > 0 && (
+          {/* Prose links for non-current profiles — derived inline, no pre-computed copy */}
+          {householdStatus.filter((p) => p.profileId !== pid).length > 0 && (
             <p className="mt-4 text-xs text-slate-500">
               Switch to{' '}
-              {otherProfiles.map((p, i) => (
-                <span key={p.profileId}>
-                  {i > 0 && ' or '}
-                  <button
-                    type="button"
-                    className="text-sky-400 hover:underline"
-                    onClick={() => handleSwitchProfile(p.profileId)}
-                  >
-                    {p.profileName}'s profile
-                  </button>
-                </span>
-              ))}{' '}
+              {householdStatus
+                .filter((p) => p.profileId !== pid)
+                .map((p, i) => (
+                  <span key={p.profileId}>
+                    {i > 0 && ' or '}
+                    <button
+                      type="button"
+                      className="text-sky-400 hover:underline"
+                      onClick={() => handleSwitchProfile(p.profileId)}
+                    >
+                      {p.profileName}'s profile
+                    </button>
+                  </span>
+                ))}{' '}
               to continue their setup →
             </p>
           )}
