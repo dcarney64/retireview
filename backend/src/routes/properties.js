@@ -13,7 +13,7 @@ const PROPERTY_COLUMNS = `
     purchase_date, mortgage_balance, mortgage_payment, mortgage_rate,
     mortgage_maturity_date, rental_income, rental_frequency, notes,
     is_primary_residence, ownership_pct, commission_rate, sale_costs,
-    archived_at, created_at, updated_at`;
+    include_in_calculations, archived_at, created_at, updated_at`;
 
 function annualRentalIncome(property) {
     const rental = Number(property.rental_income) || 0;
@@ -90,18 +90,19 @@ router.get('/', requireAuth, requireProfile, async (req, res) => {
         );
 
         const properties = result.rows.map(withComputed);
-        const active = properties.filter((p) => !p.archived_at);
+        const active   = properties.filter((p) => !p.archived_at);
+        const included = active.filter((p) => p.include_in_calculations !== false);
 
         return res.json({
             properties,
             totals: {
-                total_real_estate_value: active.reduce((s, p) => s + Number(p.estimated_value), 0),
-                total_your_value: active.reduce((s, p) => s + p.yourValue, 0),
-                total_mortgage_balance: active.reduce((s, p) => s + (Number(p.mortgage_balance) || 0), 0),
-                total_equity: active.reduce((s, p) => s + p.yourEquity, 0),
-                total_net_equity_if_sold: active.reduce((s, p) => s + p.netEquityIfSold, 0),
-                total_monthly_rental_income: active.reduce((s, p) => s + p.annual_rental_income / 12, 0),
-                total_annual_rental_income: active.reduce((s, p) => s + p.annual_rental_income, 0),
+                total_real_estate_value: included.reduce((s, p) => s + Number(p.estimated_value), 0),
+                total_your_value: included.reduce((s, p) => s + p.yourValue, 0),
+                total_mortgage_balance: included.reduce((s, p) => s + (Number(p.mortgage_balance) || 0), 0),
+                total_equity: included.reduce((s, p) => s + p.yourEquity, 0),
+                total_net_equity_if_sold: included.reduce((s, p) => s + p.netEquityIfSold, 0),
+                total_monthly_rental_income: included.reduce((s, p) => s + p.annual_rental_income / 12, 0),
+                total_annual_rental_income: included.reduce((s, p) => s + p.annual_rental_income, 0),
             },
         });
     } catch (error) {
@@ -286,6 +287,29 @@ router.post('/:id/value-update', requireAuth, requireProfile, async (req, res) =
         return res.json(withComputed(updated.rows[0]));
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Failed to record value' });
+    }
+});
+
+// PATCH /api/properties/:id/toggle — flip include_in_calculations
+router.patch('/:id/toggle', requireAuth, requireProfile, async (req, res) => {
+    try {
+        const { included } = req.body ?? {};
+        if (typeof included !== 'boolean') {
+            return res.status(400).json({ error: 'included must be a boolean' });
+        }
+        const updated = await query(
+            `UPDATE properties
+             SET include_in_calculations = $3, updated_at = NOW()
+             WHERE id = $1 AND user_id = $2
+             RETURNING ${PROPERTY_COLUMNS}`,
+            [req.params.id, req.user.id, included]
+        );
+        if (!updated.rowCount) {
+            return res.status(404).json({ error: 'Property not found' });
+        }
+        return res.json(withComputed(updated.rows[0]));
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to update property' });
     }
 });
 

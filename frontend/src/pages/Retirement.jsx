@@ -670,48 +670,75 @@ export default function Retirement() {
 
               {recurringIncomeSources.length > 0 ? (
                 /* ── Recurring income sources from the Income page ── */
-                <div className="space-y-2">
-                  {recurringIncomeSources.map((src) => {
-                    const startLabel = src.start_type === 'now'
+                (() => {
+                  const retAge = Number(selected?.retirement_age) || 67;
+                  const preRetire  = recurringIncomeSources.filter((s) => s.ends_at_retirement);
+                  const postRetire = recurringIncomeSources.filter((s) => !s.ends_at_retirement);
+
+                  const srcLabel = (src) => {
+                    const start = src.start_type === 'now'
                       ? 'active now'
                       : src.start_type === 'age' && src.start_age
                         ? `starts age ${src.start_age}`
                         : src.start_date ?? '';
-                    const endLabel = src.end_type === 'lifetime'
-                      ? 'lifetime'
-                      : src.end_type === 'age' && src.end_age
-                        ? `ends ${src.end_age}`
-                        : src.end_type === 'years' && src.end_years
-                          ? `${src.end_years}-yr certain`
-                          : '';
-                    return (
-                      <div
-                        key={src.id}
-                        className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
-                          src.is_active
-                            ? 'border-slate-700 bg-slate-800/40'
-                            : 'border-slate-800 opacity-40'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <span className="font-medium text-slate-200">{src.name}</span>
-                          <span className="ml-2 text-xs text-slate-500">
-                            {startLabel}{endLabel ? ` → ${endLabel}` : ''}
-                          </span>
-                        </div>
-                        <span className="ml-3 shrink-0 font-medium tabular-nums text-slate-300">
-                          {formatCurrency(src.monthly_amount)}/mo
-                        </span>
+                    const end = src.ends_at_retirement
+                      ? `ends at retirement`
+                      : src.end_type === 'lifetime'
+                        ? 'lifetime'
+                        : src.end_type === 'age' && src.end_age
+                          ? `ends age ${src.end_age}`
+                          : src.end_type === 'years' && src.end_years
+                            ? `${src.end_years}-yr certain`
+                            : '';
+                    return `${start}${end ? ` → ${end}` : ''}`;
+                  };
+
+                  const SrcRow = ({ src }) => (
+                    <div
+                      key={src.id}
+                      className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
+                        src.is_active
+                          ? 'border-slate-700 bg-slate-800/40'
+                          : 'border-slate-800 opacity-40'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <span className="font-medium text-slate-200">{src.name}</span>
+                        <span className="ml-2 text-xs text-slate-500">{srcLabel(src)}</span>
                       </div>
-                    );
-                  })}
-                  <Link
-                    to="/income"
-                    className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
-                  >
-                    <ExternalLink size={11} /> Manage in Income page
-                  </Link>
-                </div>
+                      <span className="ml-3 shrink-0 font-medium tabular-nums text-slate-300">
+                        {formatCurrency(src.monthly_amount)}/mo
+                      </span>
+                    </div>
+                  );
+
+                  return (
+                    <div className="space-y-3">
+                      {preRetire.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-amber-500/80">
+                            Pre-retirement (ends at age {retAge})
+                          </div>
+                          {preRetire.map((src) => <SrcRow key={src.id} src={src} />)}
+                        </div>
+                      )}
+                      {postRetire.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-emerald-500/80">
+                            At &amp; after retirement
+                          </div>
+                          {postRetire.map((src) => <SrcRow key={src.id} src={src} />)}
+                        </div>
+                      )}
+                      <Link
+                        to="/income"
+                        className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
+                      >
+                        <ExternalLink size={11} /> Manage in Income page
+                      </Link>
+                    </div>
+                  );
+                })()
               ) : (
                 /* ── Manual fallback when no recurring sources exist ── */
                 <>

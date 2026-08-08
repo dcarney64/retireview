@@ -30,7 +30,7 @@ router.get('/', requireAuth, requireProfile, async (req, res) => {
             query(
                 `SELECT id, name, property_type, estimated_value, mortgage_balance,
                         rental_income, rental_frequency, is_primary_residence, archived_at,
-                        ownership_pct, commission_rate, sale_costs
+                        ownership_pct, commission_rate, sale_costs, include_in_calculations
                  FROM properties
                  WHERE user_id = $1 AND archived_at IS NULL
                    AND ($2::int IS NULL OR profile_id = $2)
@@ -40,7 +40,7 @@ router.get('/', requireAuth, requireProfile, async (req, res) => {
             query(
                 `SELECT id, name, asset_type, estimated_value, ownership_pct,
                         generates_income, monthly_income, income_description,
-                        expected_sale_age, expected_sale_value
+                        expected_sale_age, expected_sale_value, include_in_calculations
                  FROM other_assets
                  WHERE user_id = $1 AND archived_at IS NULL
                    AND ($2::int IS NULL OR profile_id = $2)
@@ -112,15 +112,17 @@ router.get('/', requireAuth, requireProfile, async (req, res) => {
         const liquidTotal = liquidAccounts.reduce((s, a) => s + Number(a.balance), 0);
         const otherAccountTotal = otherAccounts.reduce((s, a) => s + Number(a.balance), 0);
 
-        // Real estate — your equity (ownership share)
-        const reValue = properties.reduce((s, p) => s + p.yourValue, 0);
-        const reMortgage = properties.reduce((s, p) => s + p.yourMortgage, 0);
+        // Real estate — only included properties count toward totals
+        const includedProperties = properties.filter((p) => p.include_in_calculations !== false);
+        const reValue = includedProperties.reduce((s, p) => s + p.yourValue, 0);
+        const reMortgage = includedProperties.reduce((s, p) => s + p.yourMortgage, 0);
         const reEquity = reValue - reMortgage;
-        const reNetIfSold = properties.reduce((s, p) => s + p.netEquityIfSold, 0);
+        const reNetIfSold = includedProperties.reduce((s, p) => s + p.netEquityIfSold, 0);
 
-        // Other assets total (your share)
-        const otherAssetsTotal = otherAssets.reduce((s, a) => s + a.yourShare, 0);
-        const otherAssetsMonthlyIncome = otherAssets
+        // Other assets total — only included assets count
+        const includedAssets = otherAssets.filter((a) => a.include_in_calculations !== false);
+        const otherAssetsTotal = includedAssets.reduce((s, a) => s + a.yourShare, 0);
+        const otherAssetsMonthlyIncome = includedAssets
             .filter((a) => a.generates_income)
             .reduce((s, a) => s + Number(a.monthly_income), 0);
 

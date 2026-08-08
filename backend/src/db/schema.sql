@@ -824,3 +824,25 @@ CREATE TABLE IF NOT EXISTS monthly_expenses (
 
 CREATE INDEX IF NOT EXISTS idx_expenses_user    ON monthly_expenses(user_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_profile ON monthly_expenses(profile_id);
+
+-- Add survivor benefit % to recurring_income (pension survivor benefit)
+ALTER TABLE recurring_income
+  ADD COLUMN IF NOT EXISTS survivor_benefit_pct NUMERIC(5,2);
+
+-- "Ends at retirement" flag — source is active only during the accumulation phase
+ALTER TABLE recurring_income
+  ADD COLUMN IF NOT EXISTS ends_at_retirement BOOLEAN DEFAULT false;
+
+-- ============================================================
+-- INCLUDE-IN-CALCULATIONS TOGGLES  (v0.8.0)
+-- Allow any financial item to be excluded from totals and
+-- projections without deleting it (what-if / scenario use).
+-- recurring_income already uses is_active for this purpose.
+-- monthly_expenses already uses is_active for this purpose.
+-- accounts already uses include_in_tracking for this purpose.
+-- ============================================================
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS include_in_calculations BOOLEAN NOT NULL DEFAULT true;
+
+ALTER TABLE other_assets
+  ADD COLUMN IF NOT EXISTS include_in_calculations BOOLEAN NOT NULL DEFAULT true;

@@ -9,8 +9,8 @@ const router = Router();
 const ASSET_COLUMNS = `
     id, name, asset_type, description, estimated_value, ownership_pct,
     generates_income, monthly_income, income_description,
-    expected_sale_age, expected_sale_value, notes, archived_at,
-    created_at, updated_at`;
+    expected_sale_age, expected_sale_value, notes,
+    include_in_calculations, archived_at, created_at, updated_at`;
 
 const ASSET_TYPES = ['business', 'intellectual_property', 'vehicle', 'collectible', 'equipment', 'other'];
 
@@ -36,9 +36,10 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
             [req.user.id, req.profileId]
         );
         const assets = result.rows.map(withComputed);
-        const totalValue = assets.reduce((s, a) => s + Number(a.estimated_value), 0);
-        const yourShare = assets.reduce((s, a) => s + a.yourShare, 0);
-        const monthlyIncome = assets
+        const included = assets.filter((a) => a.include_in_calculations !== false);
+        const totalValue = included.reduce((s, a) => s + Number(a.estimated_value), 0);
+        const yourShare = included.reduce((s, a) => s + a.yourShare, 0);
+        const monthlyIncome = included
             .filter((a) => a.generates_income)
             .reduce((s, a) => s + Number(a.monthly_income), 0);
 
@@ -163,6 +164,29 @@ router.put('/:id', requireAuth, requireProfile, async (req, res) => {
         return res.json(withComputed(updated.rows[0]));
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Failed to update other asset' });
+    }
+});
+
+// PATCH /api/other-assets/:id/toggle — flip include_in_calculations
+router.patch('/:id/toggle', requireAuth, requireProfile, async (req, res) => {
+    try {
+        const { included } = req.body ?? {};
+        if (typeof included !== 'boolean') {
+            return res.status(400).json({ error: 'included must be a boolean' });
+        }
+        const updated = await query(
+            `UPDATE other_assets
+             SET include_in_calculations = $3, updated_at = NOW()
+             WHERE id = $1 AND user_id = $2
+             RETURNING ${ASSET_COLUMNS}`,
+            [req.params.id, req.user.id, included]
+        );
+        if (!updated.rowCount) {
+            return res.status(404).json({ error: 'Asset not found' });
+        }
+        return res.json(withComputed(updated.rows[0]));
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to update asset' });
     }
 });
 

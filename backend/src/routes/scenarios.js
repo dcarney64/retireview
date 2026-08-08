@@ -34,8 +34,12 @@ function srcEndAge(src, startAge) {
 /**
  * True when `src` is paying at `age` in `projectionYear`.
  * currentAge is used to resolve 'now' start type.
+ * retirementAge: when provided, ends_at_retirement sources stop at that boundary.
  */
-function isSrcActiveAtAge(src, age, currentAge, projectionYear) {
+function isSrcActiveAtAge(src, age, currentAge, projectionYear, retirementAge = null) {
+    // ends_at_retirement: only active during the accumulation phase
+    if (src.ends_at_retirement && retirementAge !== null && age >= retirementAge) return false;
+
     const sa = srcStartAge(src);
 
     // — start gate —
@@ -77,11 +81,11 @@ function srcMonthlyAtAge(src, age, currentAge) {
  * Sum all active recurring income sources at a given age.
  * Returns { annual, breakdown: [{name, type, monthly}] }.
  */
-function recurringAt(sources, age, currentAge, projectionYear) {
+function recurringAt(sources, age, currentAge, projectionYear, retirementAge = null) {
     let annual = 0;
     const breakdown = [];
     for (const src of sources) {
-        if (!isSrcActiveAtAge(src, age, currentAge, projectionYear)) continue;
+        if (!isSrcActiveAtAge(src, age, currentAge, projectionYear, retirementAge)) continue;
         const monthly = srcMonthlyAtAge(src, age, currentAge);
         annual += monthly * 12;
         breakdown.push({
@@ -213,7 +217,7 @@ export function computeProjection(scenario, currentYear, otherAssets = [], recur
 
         if (useRecurring) {
             // Pull from recurring_income table — each source carries its own start/end logic
-            const rec = recurringAt(recurringIncomeSources, age, currentAge, year);
+            const rec = recurringAt(recurringIncomeSources, age, currentAge, year, retirementAge);
             recurringAnnual        = rec.annual;
             // Other-asset (business) income sits on top of recurring sources, same as before
             guaranteedIncome       = recurringAnnual + (!retired ? otherAssetAnnualIncome : 0);
@@ -799,7 +803,7 @@ router.get('/:id/projection', requireAuth, requireProfile, async (req, res) => {
                         start_type, start_age, start_date,
                         end_type, end_age, end_date, end_years,
                         annual_increase_pct, is_inflation_adjusted,
-                        tax_treatment
+                        tax_treatment, ends_at_retirement
                  FROM recurring_income
                  WHERE user_id = $1
                    AND ($2::int IS NULL OR profile_id = $2)

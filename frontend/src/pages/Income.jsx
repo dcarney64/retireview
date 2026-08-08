@@ -19,6 +19,8 @@ import {
   X,
 } from 'lucide-react';
 
+import IncludeToggle from '../components/shared/IncludeToggle';
+
 import apiClient from '../api/client';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
@@ -47,28 +49,68 @@ const EVENT_INCOME_TYPES = [
 ];
 
 const TAX_TREATMENTS = [
-  { value: 'taxable',      label: 'Taxable'          },
-  { value: 'tax_deferred', label: 'Tax-deferred'     },
-  { value: 'tax_free',     label: 'Tax-free'         },
+  { value: 'taxable',      label: 'Taxable'      },
+  { value: 'tax_deferred', label: 'Tax-deferred' },
+  { value: 'tax_free',     label: 'Tax-free'     },
 ];
 
-const EMPTY_FORM = {
-  name:                  '',
-  income_type:           'social_security',
-  monthly_amount:        '',
-  gross_monthly_amount:  '',
-  start_type:            'age',
-  start_age:             '',
-  start_date:            '',
-  end_type:              'lifetime',
-  end_age:               '',
-  end_date:              '',
-  end_years:             '',
+// ─── empty form & type defaults ───────────────────────────────────────────────
+
+const BASE_FORM = {
+  name:                 '',
+  income_type:          'social_security',
+  monthly_amount:       '',
+  gross_monthly_amount: '',
+  survivor_benefit_pct: '',
+  start_type:           'age',
+  start_age:            '',
+  start_date:           '',
+  end_type:             'lifetime',
+  end_age:              '',
+  end_date:             '',
+  end_years:            '',
   is_inflation_adjusted: false,
-  annual_increase_pct:   '0',
-  tax_treatment:         'taxable',
-  notes:                 '',
+  annual_increase_pct:  '0',
+  tax_treatment:        'taxable',
+  notes:                '',
+  ends_at_retirement:   false,
 };
+
+function emptyForType(type) {
+  switch (type) {
+    case 'social_security':
+      return { ...BASE_FORM, income_type: 'social_security',
+               start_type: 'age', start_age: '67', end_type: 'lifetime',
+               is_inflation_adjusted: true, annual_increase_pct: '2.5',
+               tax_treatment: 'taxable' };
+    case 'pension':
+      return { ...BASE_FORM, income_type: 'pension',
+               start_type: 'age', start_age: '', end_type: 'lifetime',
+               is_inflation_adjusted: false, annual_increase_pct: '0',
+               tax_treatment: 'taxable' };
+    case 'annuity':
+      return { ...BASE_FORM, income_type: 'annuity',
+               start_type: 'age', start_age: '', end_type: 'lifetime',
+               is_inflation_adjusted: false, annual_increase_pct: '0',
+               tax_treatment: 'taxable' };
+    case 'employment':
+      return { ...BASE_FORM, income_type: 'employment',
+               start_type: 'now', start_age: '', end_type: 'retirement',
+               ends_at_retirement: true,
+               is_inflation_adjusted: false, annual_increase_pct: '0',
+               tax_treatment: 'taxable' };
+    case 'rental':
+      return { ...BASE_FORM, income_type: 'rental',
+               start_type: 'now', start_age: '', end_type: 'lifetime',
+               is_inflation_adjusted: false, annual_increase_pct: '0',
+               tax_treatment: 'taxable' };
+    default:
+      return { ...BASE_FORM, income_type: type || 'other',
+               start_type: 'now', start_age: '', end_type: 'lifetime' };
+  }
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
 function rtMeta(value) {
   return RECURRING_TYPES.find((t) => t.value === value) || RECURRING_TYPES[RECURRING_TYPES.length - 1];
@@ -78,8 +120,6 @@ function eventMeta(value) {
   return EVENT_INCOME_TYPES.find((t) => t.value === value) || EVENT_INCOME_TYPES[EVENT_INCOME_TYPES.length - 1];
 }
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
 function startLabel(src) {
   if (src.start_type === 'now') return 'Active now';
   if (src.start_type === 'age' && src.start_age) return `Starts at age ${src.start_age}`;
@@ -87,7 +127,9 @@ function startLabel(src) {
   return 'Starts —';
 }
 
-function endLabel(src) {
+function endLabel(src, retirementAge) {
+  if (src.ends_at_retirement || src.end_type === 'retirement')
+    return retirementAge ? `Ends at retirement (age ${retirementAge})` : 'Ends at retirement';
   if (src.end_type === 'lifetime') return 'Lifetime';
   if (src.end_type === 'age' && src.end_age) return `Ends at age ${src.end_age}`;
   if (src.end_type === 'date' && src.end_date) return `Ends ${src.end_date}`;
@@ -95,9 +137,496 @@ function endLabel(src) {
   return 'Ends —';
 }
 
+function formFromSrc(src) {
+  return {
+    name:                  src.name || '',
+    income_type:           src.income_type || 'other',
+    monthly_amount:        String(src.monthly_amount ?? ''),
+    gross_monthly_amount:  src.gross_monthly_amount != null ? String(src.gross_monthly_amount) : '',
+    survivor_benefit_pct:  src.survivor_benefit_pct != null ? String(src.survivor_benefit_pct) : '',
+    start_type:            src.start_type || 'age',
+    start_age:             String(src.start_age ?? ''),
+    start_date:            src.start_date || '',
+    // If ends_at_retirement is true in the DB, represent it as 'retirement' in the UI
+    ends_at_retirement:    Boolean(src.ends_at_retirement),
+    end_type:              src.ends_at_retirement ? 'retirement' : (src.end_type || 'lifetime'),
+    end_age:               String(src.end_age ?? ''),
+    end_date:              src.end_date || '',
+    end_years:             String(src.end_years ?? ''),
+    is_inflation_adjusted: Boolean(src.is_inflation_adjusted),
+    annual_increase_pct:   String(src.annual_increase_pct ?? '0'),
+    tax_treatment:         src.tax_treatment || 'taxable',
+    notes:                 src.notes || '',
+  };
+}
+
+function buildPayload(form) {
+  const _sbp = form.survivor_benefit_pct;
+  const _gma = form.gross_monthly_amount;
+  // 'retirement' is a UI-only end_type; translate to DB flags
+  const isRetirement = form.end_type === 'retirement';
+  const dbEndType    = isRetirement ? 'lifetime' : form.end_type;
+  return {
+    name:                  form.name.trim(),
+    income_type:           form.income_type,
+    monthly_amount:        Number(form.monthly_amount) || 0,
+    gross_monthly_amount:  _gma !== '' && _gma != null ? Number(_gma) : null,
+    survivor_benefit_pct:  _sbp !== '' && _sbp != null ? Number(_sbp) : null,
+    start_type:            form.start_type,
+    start_age:             form.start_type === 'age'  ? Number(form.start_age) || null : null,
+    start_date:            form.start_type === 'date' ? form.start_date || null        : null,
+    ends_at_retirement:    isRetirement,
+    end_type:              dbEndType,
+    end_age:               dbEndType === 'age'   ? Number(form.end_age)   || null : null,
+    end_date:              dbEndType === 'date'  ? form.end_date  || null         : null,
+    end_years:             dbEndType === 'years' ? Number(form.end_years) || null : null,
+    is_inflation_adjusted: form.is_inflation_adjusted,
+    annual_increase_pct:   Number(form.annual_increase_pct) || 0,
+    tax_treatment:         form.tax_treatment,
+    notes:                 form.notes?.trim() || null,
+  };
+}
+
+// ─── shared UI primitives ─────────────────────────────────────────────────────
+
 const selectCls =
   'w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 ' +
   'focus:border-sky-500 focus:outline-none';
+
+function Field({ label, hint, children }) {
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-sm text-slate-400">{label}</label>
+      {children}
+      {hint ? <p className="text-xs text-slate-500">{hint}</p> : null}
+    </div>
+  );
+}
+
+function Divider({ label }) {
+  return (
+    <div className="flex items-center gap-2 pt-1">
+      <div className="h-px flex-1 bg-slate-800" />
+      <span className="text-xs font-medium uppercase tracking-wider text-slate-600">{label}</span>
+      <div className="h-px flex-1 bg-slate-800" />
+    </div>
+  );
+}
+
+// ─── type-specific field sections ─────────────────────────────────────────────
+
+function StartSection({ form, set, options = ['now', 'age', 'date'] }) {
+  // For SS: just an age input, no radio
+  if (options.length === 1 && options[0] === 'age-only') {
+    return null; // handled inline in SSFields
+  }
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium text-slate-300">Starts</legend>
+      {[
+        { v: 'now',  l: 'Right now (already active)' },
+        { v: 'age',  l: 'At age' },
+        { v: 'date', l: 'On date' },
+      ].filter(o => options.includes(o.v)).map(({ v, l }) => (
+        <label key={v} className="flex items-center gap-2.5 text-sm text-slate-300">
+          <input type="radio" name="start_type" value={v}
+            checked={form.start_type === v} onChange={set('start_type')}
+            className="accent-sky-500" />
+          {l}
+          {v === 'age' && form.start_type === 'age' && (
+            <Input type="number" min="0" max="100" value={form.start_age}
+              onChange={set('start_age')} className="ml-1 w-20" placeholder="65" />
+          )}
+          {v === 'date' && form.start_type === 'date' && (
+            <Input type="date" value={form.start_date}
+              onChange={set('start_date')} className="ml-1" />
+          )}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+function EndSection({ form, set, options = ['lifetime', 'age', 'date', 'years'] }) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium text-slate-300">Ends</legend>
+      {[
+        { v: 'lifetime',   l: 'Never (lifetime)'     },
+        { v: 'retirement', l: 'At retirement'         },
+        { v: 'age',        l: 'At age'               },
+        { v: 'date',       l: 'On date'              },
+        { v: 'years',      l: 'After (term certain)' },
+      ].filter(o => options.includes(o.v)).map(({ v, l }) => (
+        <label key={v} className="flex items-start gap-2.5 text-sm text-slate-300">
+          <input type="radio" name="end_type" value={v}
+            checked={form.end_type === v} onChange={set('end_type')}
+            className="accent-sky-500 mt-0.5 shrink-0" />
+          <span className="flex flex-col gap-0.5">
+            {l}
+            {v === 'retirement' && form.end_type === 'retirement' && (
+              <span className="text-xs text-amber-400/80">
+                Uses retirement age from your active scenario.{' '}
+                <a href="/retirement" className="underline hover:text-amber-300">
+                  Change in Retirement settings →
+                </a>
+              </span>
+            )}
+          </span>
+          {v === 'age' && form.end_type === 'age' && (
+            <Input type="number" min="0" max="120" value={form.end_age}
+              onChange={set('end_age')} className="ml-1 w-20" placeholder="85" />
+          )}
+          {v === 'date' && form.end_type === 'date' && (
+            <Input type="date" value={form.end_date}
+              onChange={set('end_date')} className="ml-1" />
+          )}
+          {v === 'years' && form.end_type === 'years' && (
+            <>
+              <Input type="number" min="1" max="50" value={form.end_years}
+                onChange={set('end_years')} className="ml-1 w-20" placeholder="20" />
+              <span className="text-slate-500">years</span>
+            </>
+          )}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+function TaxField({ form, set }) {
+  return (
+    <Field label="Tax treatment">
+      <div className="flex gap-4">
+        {TAX_TREATMENTS.map(({ value, label }) => (
+          <label key={value} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+            <input type="radio" name="tax_treatment" value={value}
+              checked={form.tax_treatment === value} onChange={set('tax_treatment')}
+              className="accent-sky-500" />
+            {label}
+          </label>
+        ))}
+      </div>
+    </Field>
+  );
+}
+
+// ── Social Security ────────────────────────────────────────────────────────────
+
+function SSFields({ form, set }) {
+  return (
+    <>
+      <Field label="Name" hint="e.g. Don's Social Security, Jane's SS">
+        <Input value={form.name} onChange={set('name')}
+          placeholder="My Social Security" autoFocus />
+      </Field>
+
+      <Field label="Monthly benefit ($)"
+             hint="Your estimated benefit at the claiming age below">
+        <Input type="number" min="0" step="50" value={form.monthly_amount}
+          onChange={set('monthly_amount')} placeholder="2000" />
+      </Field>
+
+      <Field label="Claiming age (62–70)">
+        <div className="flex items-center gap-3">
+          <Input type="number" min="62" max="70" value={form.start_age}
+            onChange={set('start_age')} className="w-24" placeholder="67" />
+          <span className="text-sm text-slate-500">
+            {form.start_age < 67 ? '⚠️ Reduced benefit (early)' :
+             form.start_age > 67 ? '✓ Increased benefit (delayed)' :
+             'Full retirement age'}
+          </span>
+        </div>
+      </Field>
+
+      <Divider label="Growth & Tax" />
+
+      <div className="rounded-md bg-slate-800/50 px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-slate-300">COLA (annual increase)</span>
+          <div className="flex items-center gap-1.5">
+            <Input type="number" min="0" max="10" step="0.1"
+              value={form.annual_increase_pct} onChange={set('annual_increase_pct')}
+              className="w-20 text-right text-sm" />
+            <span className="text-sm text-slate-500">%/yr</span>
+          </div>
+        </div>
+        <p className="text-xs text-slate-600">
+          SS adjusts annually for inflation. Historical average ~2.5%/yr.
+        </p>
+      </div>
+
+      <div className="rounded-md border border-slate-800 px-4 py-2.5 text-xs text-slate-500">
+        📋 SS benefits are taxable income — up to 85% may be included in your taxable income depending on your total income.
+      </div>
+
+      <Field label="Notes (optional)">
+        <textarea className={`${selectCls} h-16 resize-none`} value={form.notes}
+          onChange={set('notes')} placeholder="Any notes…" />
+      </Field>
+    </>
+  );
+}
+
+// ── Pension ───────────────────────────────────────────────────────────────────
+
+function PensionFields({ form, set, setBool }) {
+  return (
+    <>
+      <Field label="Plan or employer name">
+        <Input value={form.name} onChange={set('name')}
+          placeholder="e.g. CalPERS, Boeing Pension Plan" autoFocus />
+      </Field>
+
+      <Field label="Monthly benefit ($)" hint="Net amount you'll receive each month">
+        <Input type="number" min="0" step="100" value={form.monthly_amount}
+          onChange={set('monthly_amount')} placeholder="2500" />
+      </Field>
+
+      <Field label="Start age"
+             hint="Age you'll begin receiving pension payments">
+        <Input type="number" min="50" max="80" value={form.start_age}
+          onChange={set('start_age')} className="w-24" placeholder="65" />
+      </Field>
+
+      <Field label="Survivor benefit (optional)"
+             hint="Percentage of your benefit paid to your spouse/beneficiary if you die first">
+        <div className="flex items-center gap-2">
+          <Input type="number" min="0" max="100" step="5"
+            value={form.survivor_benefit_pct} onChange={set('survivor_benefit_pct')}
+            className="w-24" placeholder="50" />
+          <span className="text-sm text-slate-500">% of your benefit</span>
+        </div>
+        <p className="text-xs text-slate-500">
+          Common options: 50%, 75%, 100%. Leave blank if no survivor benefit.
+        </p>
+      </Field>
+
+      <Divider label="Growth & Tax" />
+
+      <label className="flex items-center gap-2.5 text-sm text-slate-300 cursor-pointer">
+        <input type="checkbox" checked={form.is_inflation_adjusted}
+          onChange={setBool('is_inflation_adjusted')} className="accent-sky-500" />
+        COLA adjusted (annual increase)
+      </label>
+      {form.is_inflation_adjusted && (
+        <div className="ml-6 flex items-center gap-2">
+          <Input type="number" min="0" max="10" step="0.1"
+            value={form.annual_increase_pct} onChange={set('annual_increase_pct')}
+            className="w-24" placeholder="2.0" />
+          <span className="text-sm text-slate-500">%/yr</span>
+        </div>
+      )}
+
+      <TaxField form={form} set={set} />
+
+      <Divider label="Timing" />
+      <EndSection form={form} set={set} options={['lifetime', 'years']} />
+
+      <Field label="Notes (optional)">
+        <textarea className={`${selectCls} h-16 resize-none`} value={form.notes}
+          onChange={set('notes')} placeholder="Plan details, options elected…" />
+      </Field>
+    </>
+  );
+}
+
+// ── Annuity ───────────────────────────────────────────────────────────────────
+
+function AnnuityFields({ form, set, setBool }) {
+  return (
+    <>
+      <Field label="Insurance company or policy name">
+        <Input value={form.name} onChange={set('name')}
+          placeholder="e.g. Northwestern Mutual, MetLife Annuity" autoFocus />
+      </Field>
+
+      <Field label="Monthly income ($)">
+        <Input type="number" min="0" step="100" value={form.monthly_amount}
+          onChange={set('monthly_amount')} placeholder="1500" />
+      </Field>
+
+      <Divider label="Timing" />
+
+      <StartSection form={form} set={set} options={['age', 'date']} />
+      <EndSection form={form} set={set} options={['lifetime', 'years']} />
+
+      <Divider label="Growth & Tax" />
+
+      <label className="flex items-center gap-2.5 text-sm text-slate-300 cursor-pointer">
+        <input type="checkbox" checked={form.is_inflation_adjusted}
+          onChange={setBool('is_inflation_adjusted')} className="accent-sky-500" />
+        Inflation rider (annual increase)
+      </label>
+      {form.is_inflation_adjusted && (
+        <div className="ml-6 flex items-center gap-2">
+          <Input type="number" min="0" max="10" step="0.1"
+            value={form.annual_increase_pct} onChange={set('annual_increase_pct')}
+            className="w-24" placeholder="2.0" />
+          <span className="text-sm text-slate-500">%/yr</span>
+        </div>
+      )}
+
+      <TaxField form={form} set={set} />
+
+      <Field label="Notes (optional)">
+        <textarea className={`${selectCls} h-16 resize-none`} value={form.notes}
+          onChange={set('notes')} placeholder="Contract number, contact info…" />
+      </Field>
+    </>
+  );
+}
+
+// ── Employment ────────────────────────────────────────────────────────────────
+
+function EmploymentFields({ form, set }) {
+  const hasGross = form.gross_monthly_amount !== '' && Number(form.gross_monthly_amount) > 0;
+  const hasNet   = form.monthly_amount !== '' && Number(form.monthly_amount) > 0;
+  const effectiveRate = hasGross && hasNet
+    ? Math.round((Number(form.monthly_amount) / Number(form.gross_monthly_amount)) * 100)
+    : null;
+
+  return (
+    <>
+      <Field label="Employer or business name">
+        <Input value={form.name} onChange={set('name')}
+          placeholder="e.g. Acme Corp, Self-employed consulting" autoFocus />
+      </Field>
+
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Gross monthly ($)" hint="Before taxes and deductions">
+          <Input type="number" min="0" step="100" value={form.gross_monthly_amount}
+            onChange={set('gross_monthly_amount')} placeholder="optional" />
+        </Field>
+        <Field label="Net monthly ($)" hint="What hits your bank account">
+          <Input type="number" min="0" step="100" value={form.monthly_amount}
+            onChange={set('monthly_amount')} placeholder="5000" />
+        </Field>
+      </div>
+      {effectiveRate !== null && (
+        <p className="text-xs text-slate-400 -mt-2">
+          Effective take-home rate: {effectiveRate}%
+        </p>
+      )}
+
+      <Field label="Annual raise (%)">
+        <div className="flex items-center gap-2">
+          <Input type="number" min="0" max="20" step="0.5"
+            value={form.annual_increase_pct} onChange={set('annual_increase_pct')}
+            className="w-24" placeholder="0" />
+          <span className="text-sm text-slate-500">%/yr (leave 0 if none)</span>
+        </div>
+      </Field>
+
+      <Divider label="Timing" />
+
+      <StartSection form={form} set={set} options={['now', 'age', 'date']} />
+      <EndSection form={form} set={set} options={['lifetime', 'retirement', 'age', 'date']} />
+
+      <Field label="Notes (optional)">
+        <textarea className={`${selectCls} h-16 resize-none`} value={form.notes}
+          onChange={set('notes')} placeholder="Job type, benefits, etc." />
+      </Field>
+    </>
+  );
+}
+
+// ── Rental ────────────────────────────────────────────────────────────────────
+
+function RentalFields({ form, set }) {
+  return (
+    <>
+      <Field label="Property or rental name">
+        <Input value={form.name} onChange={set('name')}
+          placeholder="e.g. Commercial Rental, 123 Main St" autoFocus />
+      </Field>
+
+      <Field label="Monthly net income ($)"
+             hint="After mortgage, insurance, maintenance, property tax">
+        <Input type="number" min="0" step="50" value={form.monthly_amount}
+          onChange={set('monthly_amount')} placeholder="1200" />
+      </Field>
+
+      <Field label="Annual rent increase (%)">
+        <div className="flex items-center gap-2">
+          <Input type="number" min="0" max="20" step="0.5"
+            value={form.annual_increase_pct} onChange={set('annual_increase_pct')}
+            className="w-24" placeholder="0" />
+          <span className="text-sm text-slate-500">%/yr</span>
+        </div>
+      </Field>
+
+      <Divider label="Timing" />
+
+      <StartSection form={form} set={set} options={['now', 'date']} />
+      <EndSection form={form} set={set} options={['lifetime', 'retirement', 'date']} />
+
+      <TaxField form={form} set={set} />
+
+      <Field label="Notes (optional)">
+        <textarea className={`${selectCls} h-16 resize-none`} value={form.notes}
+          onChange={set('notes')} placeholder="Address, tenant, lease details…" />
+      </Field>
+    </>
+  );
+}
+
+// ── Other ─────────────────────────────────────────────────────────────────────
+
+function OtherFields({ form, set, setBool }) {
+  return (
+    <>
+      <Field label="Name / description">
+        <Input value={form.name} onChange={set('name')}
+          placeholder="e.g. Royalties, Trust distributions, Part-time work" autoFocus />
+      </Field>
+
+      <Field label="Monthly amount ($)">
+        <Input type="number" min="0" step="100" value={form.monthly_amount}
+          onChange={set('monthly_amount')} placeholder="500" />
+      </Field>
+
+      <Divider label="Timing" />
+
+      <StartSection form={form} set={set} options={['now', 'age', 'date']} />
+      <EndSection form={form} set={set} options={['lifetime', 'retirement', 'age', 'date', 'years']} />
+
+      <Divider label="Growth & Tax" />
+
+      <label className="flex items-center gap-2.5 text-sm text-slate-300 cursor-pointer">
+        <input type="checkbox" checked={form.is_inflation_adjusted}
+          onChange={setBool('is_inflation_adjusted')} className="accent-sky-500" />
+        Annual increase / COLA
+      </label>
+      {form.is_inflation_adjusted && (
+        <div className="ml-6 flex items-center gap-2">
+          <Input type="number" min="0" max="20" step="0.1"
+            value={form.annual_increase_pct} onChange={set('annual_increase_pct')}
+            className="w-24" placeholder="2.5" />
+          <span className="text-sm text-slate-500">%/yr</span>
+        </div>
+      )}
+
+      <TaxField form={form} set={set} />
+
+      <Field label="Notes (optional)">
+        <textarea className={`${selectCls} h-16 resize-none`} value={form.notes}
+          onChange={set('notes')} placeholder="Source details, conditions…" />
+      </Field>
+    </>
+  );
+}
+
+function TypeFields({ form, set, setBool }) {
+  switch (form.income_type) {
+    case 'social_security': return <SSFields         form={form} set={set} setBool={setBool} />;
+    case 'pension':         return <PensionFields    form={form} set={set} setBool={setBool} />;
+    case 'annuity':         return <AnnuityFields    form={form} set={set} setBool={setBool} />;
+    case 'employment':      return <EmploymentFields form={form} set={set} setBool={setBool} />;
+    case 'rental':          return <RentalFields     form={form} set={set} setBool={setBool} />;
+    default:                return <OtherFields      form={form} set={set} setBool={setBool} />;
+  }
+}
 
 // ─── INCOME TIMELINE ─────────────────────────────────────────────────────────
 
@@ -115,7 +644,6 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
   for (let a = Math.ceil(minAge / 5) * 5; a <= maxAge; a += 5) ageMarkers.push(a);
 
   const activeSources = sources.filter((s) => s.is_active);
-
   if (activeSources.length === 0) return null;
 
   return (
@@ -123,59 +651,44 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
         Income Timeline
       </h3>
-
-      {/* Age axis */}
       <div className="mb-2 ml-36 mr-0 flex select-none justify-between text-xs text-slate-600">
         {ageMarkers.map((a) => (
           <span key={a} className="w-0 text-center">{a}</span>
         ))}
       </div>
-
-      {/* Rows */}
       <div className="space-y-1.5">
         {activeSources.map((src) => {
-          const meta       = rtMeta(src.income_type);
-          const rawStart   = src.start_type === 'now' ? currentAge : (src.resolvedStartAge ?? currentAge);
-          const rawEnd     = src.resolvedEndAge ?? maxAge;
-          const isHovered  = hovered === src.id;
-
+          const meta           = rtMeta(src.income_type);
+          const rawStart       = src.start_type === 'now' ? currentAge : (src.resolvedStartAge ?? currentAge);
+          // ends_at_retirement: bar ends exactly at the retirement marker
+          const rawEnd         = src.ends_at_retirement ? retirementAge : (src.resolvedEndAge ?? maxAge);
+          const isPreRetire    = Boolean(src.ends_at_retirement);
+          const isHovered      = hovered === src.id;
           return (
             <div key={src.id} className="flex items-center gap-3">
-              {/* Label */}
               <div className="w-36 shrink-0 truncate text-xs text-slate-400" title={src.name}>
                 <span className="mr-1">{meta.icon}</span>
                 {src.name}
               </div>
-
-              {/* Bar track */}
               <div className="relative h-5 flex-1 rounded bg-slate-800">
-                {/* Current-age marker */}
-                <div
-                  className="absolute top-0 h-full w-px bg-sky-500/50"
-                  style={{ left: toLeft(currentAge) }}
-                />
-                {/* Retirement-age marker */}
-                <div
-                  className="absolute top-0 h-full w-px bg-emerald-500/40"
-                  style={{ left: toLeft(retirementAge) }}
-                />
-
-                {/* Income bar */}
+                <div className="absolute top-0 h-full w-px bg-sky-500/50"    style={{ left: toLeft(currentAge) }} />
+                <div className="absolute top-0 h-full w-px bg-emerald-500/40" style={{ left: toLeft(retirementAge) }} />
                 <div
                   className="absolute top-0.5 h-4 rounded cursor-pointer transition-opacity"
                   style={{
                     left:            toLeft(rawStart),
                     width:           toWidth(rawStart, rawEnd),
                     backgroundColor: meta.color,
-                    opacity:         isHovered ? 1 : 0.75,
+                    opacity:         isHovered ? 1 : (isPreRetire ? 0.45 : 0.75),
+                    // dashed border on pre-retirement-only bars to signal they stop at retirement
+                    outline:         isPreRetire ? `2px dashed ${meta.color}` : 'none',
+                    outlineOffset:   '-2px',
                   }}
                   onMouseEnter={() => setHovered(src.id)}
                   onMouseLeave={() => setHovered(null)}
-                  title={`${src.name}: ${formatCurrency(src.monthly_amount)}/mo`}
+                  title={`${src.name}: ${formatCurrency(src.monthly_amount)}/mo${isPreRetire ? ' — pre-retirement only' : ''}`}
                 />
               </div>
-
-              {/* Monthly */}
               <div className="w-24 shrink-0 text-right text-xs font-medium tabular-nums text-slate-300">
                 {formatCurrency(src.monthly_amount)}/mo
               </div>
@@ -183,8 +696,6 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
           );
         })}
       </div>
-
-      {/* Legend */}
       <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-full bg-sky-500/50" /> Now (age {currentAge})
@@ -192,119 +703,17 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-500/40" /> Retirement (age {retirementAge})
         </span>
+        {activeSources.some((s) => s.ends_at_retirement) && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-sm border border-slate-500 opacity-60" /> Pre-retirement only (dashed)
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
 // ─── INCOME CARD ─────────────────────────────────────────────────────────────
-
-function IncomeCard({ src, currentAge, retirementAge, onEdit, onDelete, onToggle }) {
-  const meta = rtMeta(src.income_type);
-  const [delConfirm, setDelConfirm] = useState(false);
-
-  return (
-    <div
-      className={`rounded-lg border px-4 py-3 transition-opacity ${
-        src.is_active
-          ? 'border-slate-700 bg-slate-800/50'
-          : 'border-slate-800 bg-slate-900/40 opacity-50'
-      }`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <span className="text-lg leading-none">{meta.icon}</span>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-slate-100">{src.name}</span>
-              {src.isCurrentlyActive && (
-                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400">
-                  Active
-                </span>
-              )}
-            </div>
-            <div className="mt-0.5 text-xs text-slate-500">
-              {startLabel(src)} → {endLabel(src)}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 items-center gap-1.5">
-          {/* What-if toggle */}
-          <button
-            type="button"
-            onClick={() => onToggle(src)}
-            className={`rounded px-2 py-1 text-xs transition-colors ${
-              src.is_active
-                ? 'bg-sky-500/10 text-sky-400 hover:bg-sky-500/20'
-                : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
-            }`}
-            title={src.is_active ? 'Exclude from projections' : 'Include in projections'}
-          >
-            {src.is_active ? 'Included' : 'Excluded'}
-          </button>
-          <button
-            type="button"
-            onClick={() => onEdit(src)}
-            className="rounded p-1.5 text-slate-500 hover:bg-slate-700 hover:text-slate-300"
-            title="Edit"
-          >
-            <Pencil size={14} />
-          </button>
-          {delConfirm ? (
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => onDelete(src.id)}
-                className="rounded px-2 py-1 text-xs text-red-400 hover:bg-red-400/10"
-              >
-                Confirm
-              </button>
-              <button
-                type="button"
-                onClick={() => setDelConfirm(false)}
-                className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-700"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setDelConfirm(true)}
-              className="rounded p-1.5 text-slate-500 hover:bg-slate-700 hover:text-red-400"
-              title="Delete"
-            >
-              <Trash2 size={14} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3 lg:grid-cols-4">
-        <Stat label="Monthly" value={formatCurrency(src.monthly_amount)} />
-        {src.monthlyAtRetirement > 0 && src.monthly_amount !== src.monthlyAtRetirement && (
-          <Stat
-            label={`At age ${retirementAge}`}
-            value={formatCurrency(src.monthlyAtRetirement)}
-          />
-        )}
-        <Stat
-          label="Tax"
-          value={TAX_TREATMENTS.find((t) => t.value === src.tax_treatment)?.label || src.tax_treatment}
-        />
-        {src.annual_increase_pct > 0 && (
-          <Stat label="COLA" value={`+${src.annual_increase_pct}%/yr`} />
-        )}
-        {src.notes && (
-          <div className="col-span-2 mt-1 text-xs text-slate-500 sm:col-span-3 lg:col-span-4">
-            {src.notes}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function Stat({ label, value }) {
   return (
@@ -315,27 +724,127 @@ function Stat({ label, value }) {
   );
 }
 
-// ─── INCOME MODAL ─────────────────────────────────────────────────────────────
+function IncomeCard({ src, currentAge, retirementAge, onEdit, onDelete, onToggle }) {
+  const meta = rtMeta(src.income_type);
+  const [delConfirm, setDelConfirm] = useState(false);
 
-const STEPS = ['Basic', 'When', 'Growth & Tax', 'Notes'];
+  return (
+    <div className={`rounded-lg border px-4 py-3 transition-opacity ${
+      src.is_active ? 'border-slate-700 bg-slate-800/50' : 'border-slate-800 bg-slate-900/40 opacity-50'
+    }`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="text-lg leading-none shrink-0">{meta.icon}</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-slate-100 truncate">{src.name}</span>
+              {src.isCurrentlyActive && (
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400 shrink-0">
+                  Active
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+              <span>{startLabel(src)} → {endLabel(src, retirementAge)}</span>
+              {src.ends_at_retirement && (
+                <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-400">
+                  Pre-retirement only
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
 
-function IncomeModal({ initial, onClose, onSaved }) {
-  const [step,  setStep]  = useState(0);
-  const [form,  setForm]  = useState(() => (initial ? formFromSrc(initial) : EMPTY_FORM));
+        <div className="flex shrink-0 items-center gap-1.5">
+          <IncludeToggle
+            included={src.is_active}
+            onToggle={(val) => onToggle(src, val)}
+          />
+          <button type="button" onClick={() => onEdit(src)}
+            className="rounded p-1.5 text-slate-500 hover:bg-slate-700 hover:text-slate-300" title="Edit">
+            <Pencil size={14} />
+          </button>
+          {delConfirm ? (
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => onDelete(src.id)}
+                className="rounded px-2 py-1 text-xs text-red-400 hover:bg-red-400/10">Confirm</button>
+              <button type="button" onClick={() => setDelConfirm(false)}
+                className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-700">Cancel</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => setDelConfirm(true)}
+              className="rounded p-1.5 text-slate-500 hover:bg-slate-700 hover:text-red-400" title="Delete">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Type-aware stats grid */}
+      <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3 lg:grid-cols-4">
+        <Stat label="Monthly (net)" value={formatCurrency(src.monthly_amount)} />
+
+        {/* Employment: gross if set */}
+        {src.income_type === 'employment' && src.gross_monthly_amount > 0 && (
+          <Stat label="Gross" value={formatCurrency(src.gross_monthly_amount)} />
+        )}
+
+        {/* SS: claiming age */}
+        {src.income_type === 'social_security' && src.start_age && (
+          <Stat label="Claiming age" value={`Age ${src.start_age}`} />
+        )}
+
+        {/* Pension: survivor benefit */}
+        {src.income_type === 'pension' && src.survivor_benefit_pct != null && (
+          <Stat label="Survivor benefit" value={`${src.survivor_benefit_pct}%`} />
+        )}
+
+        {/* Retirement projection */}
+        {src.monthlyAtRetirement > 0 && src.monthlyAtRetirement !== src.monthly_amount && (
+          <Stat label={`At age ${retirementAge}`} value={formatCurrency(src.monthlyAtRetirement)} />
+        )}
+
+        {/* COLA */}
+        {src.annual_increase_pct > 0 && (
+          <Stat label="COLA" value={`+${src.annual_increase_pct}%/yr`} />
+        )}
+
+        <Stat
+          label="Tax"
+          value={TAX_TREATMENTS.find((t) => t.value === src.tax_treatment)?.label || src.tax_treatment}
+        />
+
+        {src.notes && (
+          <div className="col-span-2 mt-1 text-xs text-slate-500 sm:col-span-3 lg:col-span-4">
+            {src.notes}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── INCOME MODAL (type-aware, single-page) ───────────────────────────────────
+
+function IncomeModal({ initial, defaultType, onClose, onSaved }) {
+  const initType = initial?.income_type || defaultType || 'social_security';
+  const [form,  setForm]  = useState(() => initial ? formFromSrc(initial) : emptyForType(initType));
   const [error, setError] = useState('');
 
   const queryClient = useQueryClient();
+  const isEditing   = !!initial?.id;
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const payload = buildPayload(form);
-      if (initial?.id) {
-        return apiClient.put(`/recurring-income/${initial.id}`, payload);
-      }
-      return apiClient.post('/recurring-income', payload);
+      return initial?.id
+        ? apiClient.put(`/recurring-income/${initial.id}`, payload)
+        : apiClient.post('/recurring-income', payload);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['recurring-income'] });
+      queryClient.invalidateQueries({ queryKey: ['recurring-income-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['cashflow-summary'] });
       onSaved();
     },
     onError: (err) => setError(err?.response?.data?.error || 'Failed to save'),
@@ -347,253 +856,62 @@ function IncomeModal({ initial, onClose, onSaved }) {
   const setBool = (key) => (e) =>
     setForm((prev) => ({ ...prev, [key]: e.target.checked }));
 
-  const canAdvance = () => {
-    if (step === 0) return form.name.trim() && form.monthly_amount !== '';
-    return true;
+  const handleTypeChange = (newType) => {
+    if (form.income_type === newType) return;
+    setForm((prev) => {
+      const fresh = emptyForType(newType);
+      // Preserve name and amounts when switching type
+      return {
+        ...fresh,
+        name:                 prev.name,
+        monthly_amount:       prev.monthly_amount,
+        gross_monthly_amount: prev.gross_monthly_amount,
+        notes:                prev.notes,
+      };
+    });
   };
+
+  const canSave = form.name.trim() && form.monthly_amount !== '' && Number(form.monthly_amount) >= 0;
+
+  const typeMeta = rtMeta(form.income_type);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-xl border border-slate-700 bg-slate-900 shadow-2xl">
+      <div className="flex w-full max-w-lg flex-col rounded-xl border border-slate-700 bg-slate-900 shadow-2xl max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-800 px-6 py-4">
           <h2 className="text-lg font-semibold text-slate-100">
-            {initial ? 'Edit Income Source' : 'Add Income Source'}
+            {isEditing ? (
+              <><span className="mr-2">{typeMeta.icon}</span>Edit {typeMeta.label}</>
+            ) : 'Add Income Source'}
           </h2>
           <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-300">
             <X size={20} />
           </button>
         </div>
 
-        {/* Step indicator */}
-        <div className="flex gap-1 border-b border-slate-800 px-6 py-3">
-          {STEPS.map((s, i) => (
+        {/* Type chips */}
+        <div className="flex shrink-0 flex-wrap gap-1.5 border-b border-slate-800 px-5 py-3">
+          {RECURRING_TYPES.map((t) => (
             <button
-              key={s}
+              key={t.value}
               type="button"
-              onClick={() => i < step || canAdvance() ? setStep(i) : null}
-              className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
-                i === step
-                  ? 'bg-sky-500/20 text-sky-300'
-                  : i < step
-                  ? 'text-slate-400 hover:text-slate-300'
-                  : 'text-slate-600'
+              onClick={() => handleTypeChange(t.value)}
+              className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                form.income_type === t.value
+                  ? 'border-sky-500/60 bg-sky-500/15 text-sky-300'
+                  : 'border-slate-700 text-slate-400 hover:border-slate-500 hover:text-slate-200'
               }`}
             >
-              {i + 1}. {s}
+              <span>{t.icon}</span>
+              {t.label}
             </button>
           ))}
         </div>
 
-        {/* Body */}
-        <div className="space-y-4 px-6 py-5">
-          {/* ── Step 0: Basic ── */}
-          {step === 0 && (
-            <>
-              <Field label="Name">
-                <Input
-                  value={form.name}
-                  onChange={set('name')}
-                  placeholder="e.g. Don's Social Security"
-                  autoFocus
-                />
-              </Field>
-              <Field label="Type">
-                <select className={selectCls} value={form.income_type} onChange={set('income_type')}>
-                  {RECURRING_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>{t.icon} {t.label}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Net monthly amount — take-home ($)">
-                <Input
-                  type="number"
-                  min="0"
-                  step="100"
-                  value={form.monthly_amount}
-                  onChange={set('monthly_amount')}
-                  placeholder="3500"
-                />
-                <p className="text-xs text-slate-500">What actually hits your bank account after taxes &amp; deductions.</p>
-              </Field>
-              <Field label="Gross monthly amount — before tax (optional)">
-                <Input
-                  type="number"
-                  min="0"
-                  step="100"
-                  value={form.gross_monthly_amount}
-                  onChange={set('gross_monthly_amount')}
-                  placeholder="leave blank if unknown"
-                />
-                {form.gross_monthly_amount && form.monthly_amount &&
-                 Number(form.gross_monthly_amount) > 0 && Number(form.monthly_amount) > 0 && (
-                  <p className="text-xs text-slate-400">
-                    Effective rate:{' '}
-                    {Math.round((Number(form.monthly_amount) / Number(form.gross_monthly_amount)) * 100)}%
-                    (gross → net)
-                  </p>
-                )}
-              </Field>
-            </>
-          )}
-
-          {/* ── Step 1: When ── */}
-          {step === 1 && (
-            <>
-              <fieldset className="space-y-2">
-                <legend className="text-sm font-medium text-slate-300">Starts</legend>
-                {[
-                  { v: 'now',  l: 'Right now (already active)' },
-                  { v: 'age',  l: 'At age' },
-                  { v: 'date', l: 'On date' },
-                ].map(({ v, l }) => (
-                  <label key={v} className="flex items-center gap-2.5 text-sm text-slate-300">
-                    <input
-                      type="radio"
-                      name="start_type"
-                      value={v}
-                      checked={form.start_type === v}
-                      onChange={set('start_type')}
-                      className="accent-sky-500"
-                    />
-                    {l}
-                    {v === 'age' && form.start_type === 'age' && (
-                      <Input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={form.start_age}
-                        onChange={set('start_age')}
-                        className="ml-1 w-20"
-                        placeholder="67"
-                      />
-                    )}
-                    {v === 'date' && form.start_type === 'date' && (
-                      <Input
-                        type="date"
-                        value={form.start_date}
-                        onChange={set('start_date')}
-                        className="ml-1"
-                      />
-                    )}
-                  </label>
-                ))}
-              </fieldset>
-
-              <fieldset className="space-y-2">
-                <legend className="text-sm font-medium text-slate-300">Ends</legend>
-                {[
-                  { v: 'lifetime', l: 'Never (lifetime)' },
-                  { v: 'age',      l: 'At age' },
-                  { v: 'date',     l: 'On date' },
-                  { v: 'years',    l: 'After' },
-                ].map(({ v, l }) => (
-                  <label key={v} className="flex items-center gap-2.5 text-sm text-slate-300">
-                    <input
-                      type="radio"
-                      name="end_type"
-                      value={v}
-                      checked={form.end_type === v}
-                      onChange={set('end_type')}
-                      className="accent-sky-500"
-                    />
-                    {l}
-                    {v === 'age' && form.end_type === 'age' && (
-                      <Input
-                        type="number"
-                        min="0"
-                        max="120"
-                        value={form.end_age}
-                        onChange={set('end_age')}
-                        className="ml-1 w-20"
-                        placeholder="85"
-                      />
-                    )}
-                    {v === 'date' && form.end_type === 'date' && (
-                      <Input
-                        type="date"
-                        value={form.end_date}
-                        onChange={set('end_date')}
-                        className="ml-1"
-                      />
-                    )}
-                    {v === 'years' && form.end_type === 'years' && (
-                      <>
-                        <Input
-                          type="number"
-                          min="1"
-                          max="50"
-                          value={form.end_years}
-                          onChange={set('end_years')}
-                          className="ml-1 w-20"
-                          placeholder="20"
-                        />
-                        <span className="text-slate-500">years</span>
-                      </>
-                    )}
-                  </label>
-                ))}
-              </fieldset>
-            </>
-          )}
-
-          {/* ── Step 2: Growth & Tax ── */}
-          {step === 2 && (
-            <>
-              <label className="flex items-center gap-2.5 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={form.is_inflation_adjusted}
-                  onChange={setBool('is_inflation_adjusted')}
-                  className="accent-sky-500"
-                />
-                Inflation / COLA adjusted
-              </label>
-              {form.is_inflation_adjusted && (
-                <Field label="Annual increase (%)">
-                  <Input
-                    type="number"
-                    min="0"
-                    max="20"
-                    step="0.1"
-                    value={form.annual_increase_pct}
-                    onChange={set('annual_increase_pct')}
-                    placeholder="2.5"
-                  />
-                </Field>
-              )}
-
-              <Field label="Tax treatment">
-                <div className="space-y-2">
-                  {TAX_TREATMENTS.map(({ value, label }) => (
-                    <label key={value} className="flex items-center gap-2.5 text-sm text-slate-300">
-                      <input
-                        type="radio"
-                        name="tax_treatment"
-                        value={value}
-                        checked={form.tax_treatment === value}
-                        onChange={set('tax_treatment')}
-                        className="accent-sky-500"
-                      />
-                      {label}
-                    </label>
-                  ))}
-                </div>
-              </Field>
-            </>
-          )}
-
-          {/* ── Step 3: Notes ── */}
-          {step === 3 && (
-            <Field label="Notes (optional)">
-              <textarea
-                className={`${selectCls} h-24 resize-none`}
-                value={form.notes}
-                onChange={set('notes')}
-                placeholder="Any details about this income source…"
-              />
-            </Field>
-          )}
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          <TypeFields form={form} set={set} setBool={setBool} />
 
           {error && (
             <div className="flex items-center gap-2 rounded-md bg-red-400/10 px-3 py-2 text-sm text-red-400">
@@ -603,97 +921,47 @@ function IncomeModal({ initial, onClose, onSaved }) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-slate-800 px-6 py-4">
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-sm text-slate-500 hover:text-slate-300"
-          >
+        <div className="flex shrink-0 items-center justify-between border-t border-slate-800 px-6 py-4">
+          <button type="button" onClick={onClose}
+            className="text-sm text-slate-500 hover:text-slate-300">
             Cancel
           </button>
-          <div className="flex gap-2">
-            {step > 0 && (
-              <Button
-                onClick={() => setStep((s) => s - 1)}
-                className="bg-slate-700 text-slate-300 hover:bg-slate-600"
-              >
-                Back
-              </Button>
-            )}
-            {step < STEPS.length - 1 ? (
-              <Button onClick={() => setStep((s) => s + 1)} disabled={!canAdvance()}>
-                Next
-              </Button>
-            ) : (
-              <Button
-                onClick={() => saveMutation.mutate()}
-                disabled={saveMutation.isPending || !form.name.trim() || form.monthly_amount === ''}
-              >
-                {saveMutation.isPending ? 'Saving…' : 'Save Income Source'}
-              </Button>
-            )}
-          </div>
+          <Button
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !canSave}
+          >
+            {saveMutation.isPending ? 'Saving…' : 'Save Income Source'}
+          </Button>
         </div>
       </div>
     </div>
   );
 }
 
-function Field({ label, children }) {
+// ─── SUMMARY CARD ─────────────────────────────────────────────────────────────
+
+function SummaryCard({ label, value, suffix, highlight, dim }) {
   return (
-    <div className="space-y-1.5">
-      <label className="block text-sm text-slate-400">{label}</label>
-      {children}
-    </div>
+    <Card className="p-4">
+      <div className="text-sm text-slate-400">{label}</div>
+      <div className={`mt-1 text-2xl font-semibold tabular-nums ${
+        highlight ? 'text-sky-300' : dim ? 'text-slate-600' : 'text-slate-100'
+      }`}>
+        {formatCurrency(value)}
+        <span className="text-sm font-normal text-slate-500">{suffix}</span>
+      </div>
+    </Card>
   );
 }
 
-function formFromSrc(src) {
-  return {
-    name:                  src.name || '',
-    income_type:           src.income_type || 'other',
-    monthly_amount:        String(src.monthly_amount ?? ''),
-    start_type:            src.start_type || 'age',
-    start_age:             String(src.start_age ?? ''),
-    start_date:            src.start_date || '',
-    end_type:              src.end_type || 'lifetime',
-    end_age:               String(src.end_age ?? ''),
-    end_date:              src.end_date || '',
-    end_years:             String(src.end_years ?? ''),
-    is_inflation_adjusted: Boolean(src.is_inflation_adjusted),
-    annual_increase_pct:   String(src.annual_increase_pct ?? '0'),
-    tax_treatment:         src.tax_treatment || 'taxable',
-    notes:                 src.notes || '',
-    gross_monthly_amount:  src.gross_monthly_amount != null ? String(src.gross_monthly_amount) : '',
-  };
-}
-
-function buildPayload(form) {
-  return {
-    name:                  form.name.trim(),
-    income_type:           form.income_type,
-    monthly_amount:        Number(form.monthly_amount) || 0,
-    gross_monthly_amount:  form.gross_monthly_amount !== '' ? Number(form.gross_monthly_amount) : null,
-    start_type:            form.start_type,
-    start_age:             form.start_type === 'age'  ? Number(form.start_age) || null : null,
-    start_date:            form.start_type === 'date' ? form.start_date || null        : null,
-    end_type:              form.end_type,
-    end_age:               form.end_type === 'age'    ? Number(form.end_age)   || null : null,
-    end_date:              form.end_type === 'date'   ? form.end_date  || null         : null,
-    end_years:             form.end_type === 'years'  ? Number(form.end_years) || null : null,
-    is_inflation_adjusted: form.is_inflation_adjusted,
-    annual_increase_pct:   form.is_inflation_adjusted ? Number(form.annual_increase_pct) || 0 : 0,
-    tax_treatment:         form.tax_treatment,
-    notes:                 form.notes.trim() || null,
-  };
-}
-
-// ─── RECURRING SOURCES TAB ───────────────────────────────────────────────────
+// ─── RECURRING SOURCES TAB ────────────────────────────────────────────────────
 
 function RecurringSourcesTab() {
-  const pid          = useActiveProfile();
-  const queryClient  = useQueryClient();
-  const [modal, setModal] = useState(null); // null | 'new' | { src }
+  const pid         = useActiveProfile();
+  const queryClient = useQueryClient();
+
+  // modal: null=closed | { defaultType } = creating | src-object = editing
+  const [modal, setModal] = useState(null);
 
   const sourcesQuery = useQuery({
     queryKey: ['recurring-income', pid],
@@ -707,25 +975,26 @@ function RecurringSourcesTab() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id) => apiClient.delete(`/recurring-income/${id}`),
-    onSuccess:  () => {
-      queryClient.invalidateQueries({ queryKey: ['recurring-income'] });
-      queryClient.invalidateQueries({ queryKey: ['recurring-income-summary'] });
-    },
-  });
-
-  const toggleMutation = useMutation({
-    mutationFn: async (src) =>
-      apiClient.put(`/recurring-income/${src.id}`, { ...buildPayload(formFromSrc(src)), is_active: !src.is_active }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['recurring-income'] });
       queryClient.invalidateQueries({ queryKey: ['recurring-income-summary'] });
     },
   });
 
-  const sources     = sourcesQuery.data || [];
-  const summary     = summaryQuery.data;
-  const currentAge  = summary?.currentAge    || 62;
-  const retireAge   = summary?.retirementAge || 67;
+  const toggleMutation = useMutation({
+    mutationFn: async ({ src, included }) =>
+      apiClient.patch(`/recurring-income/${src.id}/toggle`, { included }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recurring-income'] });
+      queryClient.invalidateQueries({ queryKey: ['recurring-income-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['cashflow-summary'] });
+    },
+  });
+
+  const sources    = sourcesQuery.data || [];
+  const summary    = summaryQuery.data;
+  const currentAge = summary?.currentAge    || 62;
+  const retireAge  = summary?.retirementAge || 67;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['recurring-income'] });
@@ -733,7 +1002,7 @@ function RecurringSourcesTab() {
     setModal(null);
   };
 
-  // Group by type for display
+  // Group by type — ALL 6 types always present (even if empty)
   const grouped = useMemo(() => {
     const map = new Map();
     for (const t of RECURRING_TYPES) map.set(t.value, []);
@@ -741,10 +1010,14 @@ function RecurringSourcesTab() {
       if (map.has(s.income_type)) map.get(s.income_type).push(s);
       else map.get('other').push(s);
     }
-    return [...map.entries()].filter(([, arr]) => arr.length > 0);
+    return [...map.entries()]; // no filter — show all sections
   }, [sources]);
 
   const activeSources = sources.filter((s) => s.is_active);
+
+  // Detect if this modal open is an edit (has .id) vs new
+  const modalInitial    = modal?.id ? modal : null;
+  const modalDefault    = modal?.defaultType || modal?.income_type || 'social_security';
 
   return (
     <>
@@ -785,11 +1058,9 @@ function RecurringSourcesTab() {
         <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-400">
           <AlertCircle size={14} className="shrink-0" />
           {sources.filter((s) => !s.is_active).length} source
-          {sources.filter((s) => !s.is_active).length > 1 ? 's' : ''} excluded from projections
-          (what-if mode). Retirement income without them:{' '}
-          <span className="font-medium">
-            {formatCurrency(summary?.atRetirement?.monthly ?? 0)}/mo
-          </span>
+          {sources.filter((s) => !s.is_active).length > 1 ? 's' : ''} excluded from projections (what-if).
+          Retirement income without them:{' '}
+          <span className="font-medium">{formatCurrency(summary?.atRetirement?.monthly ?? 0)}/mo</span>
         </div>
       )}
 
@@ -798,15 +1069,11 @@ function RecurringSourcesTab() {
         <Card><Skeleton className="h-32 w-full" /></Card>
       ) : activeSources.length > 0 ? (
         <Card>
-          <IncomeTimeline
-            sources={activeSources}
-            currentAge={currentAge}
-            retirementAge={retireAge}
-          />
+          <IncomeTimeline sources={activeSources} currentAge={currentAge} retirementAge={retireAge} />
         </Card>
       ) : null}
 
-      {/* Breakdown at retirement */}
+      {/* Retirement breakdown */}
       {(summary?.atRetirement?.breakdown?.length ?? 0) > 0 && (
         <Card>
           <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
@@ -819,13 +1086,9 @@ function RecurringSourcesTab() {
                 <div key={b.id} className="flex items-center gap-3 text-sm">
                   <span className="text-base leading-none">{meta.icon}</span>
                   <span className="flex-1 text-slate-300">{b.name}</span>
-                  {b.note && (
-                    <span className="text-xs text-slate-600">{b.note}</span>
-                  )}
-                  <span
-                    className="w-24 text-right font-medium tabular-nums"
-                    style={{ color: b.monthly > 0 ? meta.color : '#475569' }}
-                  >
+                  {b.note && <span className="text-xs text-slate-600">{b.note}</span>}
+                  <span className="w-24 text-right font-medium tabular-nums"
+                        style={{ color: b.monthly > 0 ? meta.color : '#475569' }}>
                     {b.monthly > 0 ? `${formatCurrency(b.monthly)}/mo` : '—'}
                   </span>
                 </div>
@@ -841,65 +1104,77 @@ function RecurringSourcesTab() {
         </Card>
       )}
 
-      {/* Source cards grouped by type */}
+      {/* ── All 6 type sections — always shown ── */}
       {sourcesQuery.isLoading ? (
         <Card><Skeleton className="h-24 w-full" /></Card>
-      ) : sources.length === 0 ? (
-        <Card>
-          <div className="flex flex-col items-center gap-3 py-12 text-center">
-            <RefreshCw size={28} className="text-slate-600" />
-            <div className="text-slate-400">No recurring income sources yet.</div>
-            <div className="max-w-xs text-sm text-slate-600">
-              Add Social Security, a pension, rental income, or any ongoing income stream
-              to see how it funds your retirement.
-            </div>
-            <Button onClick={() => setModal('new')} className="mt-2 flex items-center gap-2">
-              <Plus size={15} /> Add First Income Source
-            </Button>
-          </div>
-        </Card>
       ) : (
         <div className="space-y-6">
           {grouped.map(([type, group]) => {
             const meta = rtMeta(type);
             return (
               <div key={type}>
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="text-base leading-none">{meta.icon}</span>
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    {meta.label}
-                  </h3>
+                {/* Section header */}
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base leading-none">{meta.icon}</span>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      {meta.label}
+                    </h3>
+                    {group.length > 0 && (
+                      <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-xs text-slate-500">
+                        {group.length}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setModal({ defaultType: type })}
+                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-sky-500 hover:bg-sky-500/10 hover:text-sky-400 transition-colors"
+                  >
+                    <Plus size={12} /> Add
+                  </button>
                 </div>
-                <div className="space-y-2">
-                  {group.map((src) => (
-                    <IncomeCard
-                      key={src.id}
-                      src={src}
-                      currentAge={currentAge}
-                      retirementAge={retireAge}
-                      onEdit={(s) => setModal(s)}
-                      onDelete={(id) => deleteMutation.mutate(id)}
-                      onToggle={(s) => toggleMutation.mutate(s)}
-                    />
-                  ))}
-                </div>
+
+                {/* Section body */}
+                {group.length === 0 ? (
+                  <div className="flex items-center justify-between rounded-lg border border-dashed border-slate-800 px-4 py-3">
+                    <span className="text-sm text-slate-600">
+                      No {meta.label.toLowerCase()} income added yet
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setModal({ defaultType: type })}
+                      className="flex items-center gap-1 text-xs text-sky-500 hover:text-sky-400"
+                    >
+                      <Plus size={12} /> Add
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {group.map((src) => (
+                      <IncomeCard
+                        key={src.id}
+                        src={src}
+                        currentAge={currentAge}
+                        retirementAge={retireAge}
+                        onEdit={(s) => setModal(s)}
+                        onDelete={(id) => deleteMutation.mutate(id)}
+                        onToggle={(s, included) => toggleMutation.mutate({ src: s, included })}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
-      {/* Add button */}
-      {sources.length > 0 && (
-        <Button onClick={() => setModal('new')} className="flex items-center gap-2">
-          <Plus size={15} /> Add Income Source
-        </Button>
-      )}
-
       {/* Modal */}
       {modal !== null && (
         <IncomeModal
-          initial={modal === 'new' ? null : modal}
+          initial={modalInitial}
+          defaultType={modalDefault}
           onClose={() => setModal(null)}
           onSaved={refresh}
         />
@@ -908,27 +1183,7 @@ function RecurringSourcesTab() {
   );
 }
 
-function SummaryCard({ label, value, suffix, highlight, dim }) {
-  return (
-    <Card className="p-4">
-      <div className="text-sm text-slate-400">{label}</div>
-      <div
-        className={`mt-1 text-2xl font-semibold tabular-nums ${
-          highlight
-            ? 'text-sky-300'
-            : dim
-            ? 'text-slate-600'
-            : 'text-slate-100'
-        }`}
-      >
-        {formatCurrency(value)}
-        <span className="text-sm font-normal text-slate-500">{suffix}</span>
-      </div>
-    </Card>
-  );
-}
-
-// ─── INVESTMENT INCOME TAB (existing functionality, preserved) ────────────────
+// ─── INVESTMENT INCOME TAB (preserved) ───────────────────────────────────────
 
 const EVENT_TAX_LABELS = {
   taxable:      'Taxable',
@@ -961,13 +1216,13 @@ function formatMonth(month) {
 
 function AddIncomeForm({ accounts, onSaved }) {
   const [form, setForm] = useState({
-    event_date:     new Date().toISOString().slice(0, 10),
-    event_type:     'dividend',
-    amount:         '',
-    account_id:     '',
-    symbol:         '',
-    description:    '',
-    tax_treatment:  'taxable',
+    event_date:    new Date().toISOString().slice(0, 10),
+    event_type:    'dividend',
+    amount:        '',
+    account_id:    '',
+    symbol:        '',
+    description:   '',
+    tax_treatment: 'taxable',
   });
   const [err, setErr] = useState('');
 
@@ -1029,11 +1284,8 @@ function AddIncomeForm({ accounts, onSaved }) {
           </select>
         </div>
         <div className="flex items-end">
-          <Button
-            className="w-full"
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending || !form.amount || !form.event_date}
-          >
+          <Button className="w-full" onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !form.amount || !form.event_date}>
             {saveMutation.isPending ? 'Adding…' : 'Add Income'}
           </Button>
         </div>
@@ -1062,7 +1314,7 @@ function InvestmentIncomeTab() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id) => apiClient.delete(`/income/${id}`),
-    onSuccess:  () => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['income-events'] });
       queryClient.invalidateQueries({ queryKey: ['income-summary'] });
     },
@@ -1096,7 +1348,6 @@ function InvestmentIncomeTab() {
 
   return (
     <>
-      {/* Stat cards */}
       {summaryQuery.isLoading ? (
         <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
           {[0, 1, 2, 3].map((i) => (
@@ -1110,11 +1361,15 @@ function InvestmentIncomeTab() {
         <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
           <Card className="p-4">
             <div className="text-sm text-slate-400">YTD Income</div>
-            <div className="mt-1 text-2xl font-semibold text-slate-100">{formatCurrency(summary?.ytd?.total || 0)}</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-100">
+              {formatCurrency(summary?.ytd?.total || 0)}
+            </div>
           </Card>
           <Card className="p-4">
             <div className="text-sm text-slate-400">Last 12 Months</div>
-            <div className="mt-1 text-2xl font-semibold text-slate-100">{formatCurrency(summary?.trailing12?.total || 0)}</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-100">
+              {formatCurrency(summary?.trailing12?.total || 0)}
+            </div>
           </Card>
           <Card className="p-4">
             <div className="text-sm text-slate-400">Projected Annual</div>
@@ -1216,15 +1471,11 @@ function InvestmentIncomeTab() {
                     {new Date(e.event_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}
                   </span>
                   <span className="text-slate-400">{meta.label}</span>
-                  {e.symbol     && <span className="font-mono text-xs text-slate-500">{e.symbol}</span>}
+                  {e.symbol      && <span className="font-mono text-xs text-slate-500">{e.symbol}</span>}
                   {e.account_name && <span className="truncate text-xs text-slate-500">{e.account_name}</span>}
                   <span className="ml-auto font-medium text-slate-100">{formatCurrency(e.amount)}</span>
-                  <button
-                    type="button"
-                    className="text-slate-500 hover:text-red-400"
-                    title="Delete"
-                    onClick={() => deleteMutation.mutate(e.id)}
-                  >
+                  <button type="button" className="text-slate-500 hover:text-red-400" title="Delete"
+                    onClick={() => deleteMutation.mutate(e.id)}>
                     ✕
                   </button>
                 </div>
@@ -1240,8 +1491,8 @@ function InvestmentIncomeTab() {
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 const TABS = [
-  { id: 'recurring',   label: 'Recurring Sources', icon: RefreshCw },
-  { id: 'investment',  label: 'Investment Income',  icon: TrendingUp },
+  { id: 'recurring',  label: 'Recurring Sources', icon: RefreshCw  },
+  { id: 'investment', label: 'Investment Income',  icon: TrendingUp },
 ];
 
 export default function Income() {
@@ -1249,7 +1500,6 @@ export default function Income() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
       <div>
         <h2 className="text-2xl font-semibold text-slate-100">Income</h2>
         <p className="mt-1 text-sm text-slate-500">
@@ -1257,7 +1507,6 @@ export default function Income() {
         </p>
       </div>
 
-      {/* Tab switcher */}
       <div className="flex gap-1 border-b border-slate-800">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -1276,7 +1525,6 @@ export default function Income() {
         ))}
       </div>
 
-      {/* Tab content */}
       {tab === 'recurring'  && <RecurringSourcesTab />}
       {tab === 'investment' && <InvestmentIncomeTab />}
     </div>

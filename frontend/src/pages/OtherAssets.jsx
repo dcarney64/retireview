@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Briefcase } from 'lucide-react';
 import { useState } from 'react';
 
+import IncludeToggle from '../components/shared/IncludeToggle';
+
 import apiClient from '../api/client';
 import ConfirmDialog from '../components/shared/ConfirmDialog';
 import { Button } from '../components/ui/button';
@@ -185,25 +187,34 @@ function AssetModal({ asset, onClose, onSaved }) {
   );
 }
 
-function AssetCard({ asset, onEdit, onArchive }) {
+function AssetCard({ asset, onEdit, onArchive, onToggle }) {
   const meta = typeMeta(asset.asset_type);
   const pct = Number(asset.ownership_pct ?? 100);
+  const included = asset.include_in_calculations !== false;
 
   return (
-    <Card>
+    <Card className={!included ? 'opacity-60' : undefined}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-amber-500/15 text-xl">
             {meta.emoji}
           </span>
           <div>
-            <div className="text-lg font-semibold text-slate-100">{asset.name}</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-lg font-semibold text-slate-100">{asset.name}</span>
+              {!included && (
+                <span className="rounded-full bg-slate-700/60 px-2 py-0.5 text-xs text-slate-400">Excluded</span>
+              )}
+            </div>
             <div className="text-sm text-slate-400">
               {meta.label}{pct < 100 ? ` · ${pct}% ownership` : ' · 100% ownership'}
             </div>
           </div>
         </div>
-        <Button className="bg-slate-700 px-3 py-1 text-xs hover:bg-slate-600" onClick={onEdit}>Edit</Button>
+        <div className="flex items-center gap-2">
+          <IncludeToggle included={included} onToggle={(val) => onToggle(asset, val)} />
+          <Button className="bg-slate-700 px-3 py-1 text-xs hover:bg-slate-600" onClick={onEdit}>Edit</Button>
+        </div>
       </div>
 
       {asset.description ? <p className="mt-2 text-sm text-slate-500">{asset.description}</p> : null}
@@ -313,6 +324,15 @@ export default function OtherAssets() {
     },
   });
 
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, included }) =>
+      apiClient.patch(`/other-assets/${id}/toggle`, { included }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['other-assets-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['net-worth'] });
+    },
+  });
+
   const refresh = () => {
     setModal(null);
     queryClient.invalidateQueries({ queryKey: ['other-assets-summary'] });
@@ -380,6 +400,7 @@ export default function OtherAssets() {
                       asset={asset}
                       onEdit={() => setModal({ mode: 'edit', asset })}
                       onArchive={() => setArchiveTarget(asset)}
+                      onToggle={(a, included) => toggleMutation.mutate({ id: a.id, included })}
                     />
                   ))}
                 </div>

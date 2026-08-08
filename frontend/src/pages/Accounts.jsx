@@ -31,7 +31,7 @@ function StatusDropdown({ account, onStatusChange, disabled }) {
       onClick={(e) => e.stopPropagation()}
       className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50 cursor-pointer"
     >
-      <option value="tracked">● Tracked</option>
+      <option value="tracked">✓ Included</option>
       <option value="excluded">○ Excluded</option>
       <option value="archived">⊗ Archive…</option>
     </select>

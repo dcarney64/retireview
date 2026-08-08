@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Building2, Home, LandPlot, Warehouse } from 'lucide-react';
 import { useState } from 'react';
+
+import IncludeToggle from '../components/shared/IncludeToggle';
 import {
   CartesianGrid,
   Line,
@@ -369,9 +371,10 @@ function Stat({ label, value, sub, subClass = 'text-slate-500' }) {
   );
 }
 
-function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
+function PropertyCard({ property, onEdit, onUpdateValue, onArchive, onToggle }) {
   const [showHistory, setShowHistory] = useState(false);
 
+  const included = property.include_in_calculations !== false;
   const meta = TYPE_META[property.property_type] || TYPE_META.other;
   const value = Number(property.estimated_value);
   const mortgage = Number(property.mortgage_balance) || 0;
@@ -391,14 +394,14 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
   const netEquityIfSold = property.netEquityIfSold ?? yourEquity;
 
   return (
-    <Card>
+    <Card className={!included ? 'opacity-60' : undefined}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
             <meta.Icon size={20} />
           </span>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-lg font-semibold text-slate-100">{property.name}</span>
               {property.is_primary_residence ? (
                 <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-300">Primary</span>
@@ -406,11 +409,17 @@ function PropertyCard({ property, onEdit, onUpdateValue, onArchive }) {
               {isPartialOwnership ? (
                 <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-300">{ownershipPct}% owned</span>
               ) : null}
+              {!included && (
+                <span className="rounded-full bg-slate-700/60 px-2 py-0.5 text-xs text-slate-400">Excluded</span>
+              )}
             </div>
             {property.address ? <div className="text-sm text-slate-400">{property.address}</div> : null}
           </div>
         </div>
-        <span className="rounded-full border border-slate-700 px-2.5 py-0.5 text-xs text-slate-300">{meta.label}</span>
+        <div className="flex items-center gap-2">
+          <IncludeToggle included={included} onToggle={(val) => onToggle(property, val)} />
+          <span className="rounded-full border border-slate-700 px-2.5 py-0.5 text-xs text-slate-300">{meta.label}</span>
+        </div>
       </div>
 
       <div className="mt-5 grid grid-cols-2 gap-x-8 gap-y-4 md:grid-cols-3">
@@ -515,6 +524,15 @@ export default function RealEstate() {
     },
   });
 
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, included }) =>
+      apiClient.patch(`/properties/${id}/toggle`, { included }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['properties'] });
+      queryClient.invalidateQueries({ queryKey: ['net-worth'] });
+    },
+  });
+
   const refresh = () => {
     setModal(null);
     queryClient.invalidateQueries({ queryKey: ['properties'] });
@@ -581,6 +599,7 @@ export default function RealEstate() {
               onEdit={() => setModal({ mode: 'edit', property })}
               onUpdateValue={() => setModal({ mode: 'value', property })}
               onArchive={() => setArchiveTarget(property)}
+              onToggle={(p, included) => toggleMutation.mutate({ id: p.id, included })}
             />
           ))}
         </div>

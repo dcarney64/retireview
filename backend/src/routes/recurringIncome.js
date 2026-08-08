@@ -42,8 +42,12 @@ function resolveEndAge(src, startAge) {
 /**
  * Is this source active at the given reference age?
  * Also respects date-based start/end relative to today.
+ * When retirementAge is provided, ends_at_retirement sources stop at that boundary.
  */
-function isActiveAtAge(src, checkAge) {
+function isActiveAtAge(src, checkAge, retirementAge = null) {
+    // ends_at_retirement: only active while pre-retirement
+    if (src.ends_at_retirement && retirementAge !== null && checkAge >= retirementAge) return false;
+
     const today = new Date();
 
     // — start check —
@@ -78,8 +82,8 @@ function projectedAmount(src, fromAge, toAge) {
 }
 
 function addComputed(src, currentAge, retirementAge) {
-    const activeNow        = src.is_active && isActiveAtAge(src, currentAge);
-    const activeAtRetire   = src.is_active && isActiveAtAge(src, retirementAge);
+    const activeNow        = src.is_active && isActiveAtAge(src, currentAge, retirementAge);
+    const activeAtRetire   = src.is_active && isActiveAtAge(src, retirementAge, retirementAge);
     const startAge         = resolveStartAge(src);
     const endAge           = resolveEndAge(src, startAge);
     const incomeStartAge   = startAge ?? currentAge;
@@ -182,11 +186,13 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
             retirementMonthly += computed.monthlyAtRetirement;
 
             const note =
-                computed.monthlyAtRetirement === 0
-                    ? (endAge !== null && endAge <= retirementAge)
-                        ? 'ends before retirement'
-                        : 'not yet started at retirement'
-                    : null;
+                s.ends_at_retirement
+                    ? 'Ends at retirement'
+                    : computed.monthlyAtRetirement === 0
+                        ? (endAge !== null && endAge <= retirementAge)
+                            ? 'ends before retirement'
+                            : 'not yet started at retirement'
+                        : null;
 
             breakdown.push({
                 id:           s.id,
@@ -255,30 +261,57 @@ router.post('/', requireAuth, requireProfile, async (req, res) => {
         const _gma = body2.gross_monthly_amount;
         const gross_monthly_amount = (_gma !== undefined && _gma !== '' && _gma !== null)
             ? Number(_gma) : null;
+        const _sbp = body2.survivor_benefit_pct;
+        const survivor_benefit_pct = (_sbp !== undefined && _sbp !== '' && _sbp !== null)
+            ? Number(_sbp) : null;
+        const ends_at_retirement = Boolean(body2.ends_at_retirement);
 
         const { rows } = await query(
             `INSERT INTO recurring_income
                 (user_id, profile_id, name, income_type, monthly_amount,
-                 gross_monthly_amount,
+                 gross_monthly_amount, survivor_benefit_pct,
                  start_type, start_age, start_date,
                  end_type, end_age, end_date, end_years,
                  is_inflation_adjusted, annual_increase_pct,
-                 tax_treatment, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                 tax_treatment, notes, ends_at_retirement)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
              RETURNING *`,
             [
                 req.user.id, writeProfileId(req),
                 name.trim(), income_type, Number(monthly_amount),
-                gross_monthly_amount,
+                gross_monthly_amount, survivor_benefit_pct,
                 effectiveStartType, start_age || null, start_date || null,
                 effectiveEndType, end_age || null, end_date || null, end_years || null,
                 Boolean(is_inflation_adjusted), Number(annual_increase_pct) || 0,
-                effectiveTax, notes?.trim() || null,
+                effectiveTax, notes?.trim() || null, ends_at_retirement,
             ],
         );
         return res.status(201).json(rows[0]);
     } catch (err) {
         return res.status(500).json({ error: err.message || 'Failed to create income source' });
+    }
+});
+
+// ─── PATCH /api/recurring-income/:id/toggle ──────────────────────────────────
+
+router.patch('/:id/toggle', requireAuth, requireProfile, async (req, res) => {
+    try {
+        const { included } = req.body ?? {};
+        if (typeof included !== 'boolean') {
+            return res.status(400).json({ error: 'included must be a boolean' });
+        }
+        const { rows } = await query(
+            `UPDATE recurring_income
+             SET is_active = $3, updated_at = NOW()
+             WHERE id = $1 AND user_id = $2
+               AND ($4::int IS NULL OR profile_id = $4)
+             RETURNING *`,
+            [req.params.id, req.user.id, included, req.profileId],
+        );
+        if (!rows.length) return res.status(404).json({ error: 'Income source not found' });
+        return res.json(rows[0]);
+    } catch (err) {
+        return res.status(500).json({ error: err.message || 'Failed to toggle income source' });
     }
 });
 
@@ -315,26 +348,32 @@ router.put('/:id', requireAuth, requireProfile, async (req, res) => {
         const _gmaPut = putBody.gross_monthly_amount;
         const gross_monthly_amount_put = (_gmaPut !== undefined && _gmaPut !== '' && _gmaPut !== null)
             ? Number(_gmaPut) : null;
+        const _sbpPut = putBody.survivor_benefit_pct;
+        const survivor_benefit_pct_put = (_sbpPut !== undefined && _sbpPut !== '' && _sbpPut !== null)
+            ? Number(_sbpPut) : null;
+        const ends_at_retirement_put = Boolean(putBody.ends_at_retirement);
 
         const { rows } = await query(
             `UPDATE recurring_income SET
                 name = $3, income_type = $4, monthly_amount = $5,
-                gross_monthly_amount = $6,
-                start_type = $7, start_age = $8, start_date = $9,
-                end_type = $10, end_age = $11, end_date = $12, end_years = $13,
-                is_inflation_adjusted = $14, annual_increase_pct = $15,
-                tax_treatment = $16, is_active = $17, notes = $18,
+                gross_monthly_amount = $6, survivor_benefit_pct = $7,
+                start_type = $8, start_age = $9, start_date = $10,
+                end_type = $11, end_age = $12, end_date = $13, end_years = $14,
+                is_inflation_adjusted = $15, annual_increase_pct = $16,
+                tax_treatment = $17, is_active = $18, notes = $19,
+                ends_at_retirement = $20,
                 updated_at = NOW()
              WHERE id = $1 AND user_id = $2
              RETURNING *`,
             [
                 req.params.id, req.user.id,
                 name.trim(), income_type, Number(monthly_amount) || 0,
-                gross_monthly_amount_put,
+                gross_monthly_amount_put, survivor_benefit_pct_put,
                 effectiveStartType, start_age || null, start_date || null,
                 effectiveEndType, end_age || null, end_date || null, end_years || null,
                 Boolean(is_inflation_adjusted), Number(annual_increase_pct) || 0,
                 effectiveTax, is_active !== false, notes?.trim() || null,
+                ends_at_retirement_put,
             ],
         );
         return res.json(rows[0]);

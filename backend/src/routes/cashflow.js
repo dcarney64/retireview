@@ -48,7 +48,16 @@ function calcAnnualTax(annualIncome, status) {
     return Math.round(tax * 100) / 100;
 }
 
-function isActiveAtAge(src, checkAge) {
+/**
+ * Is this income source active at checkAge?
+ * When retirementAge is supplied, ends_at_retirement sources stop at that boundary —
+ * so Today view (checkAge=currentAge) includes them unless already retired,
+ * and At Retirement view (checkAge=retirementAge) always excludes them.
+ */
+function isActiveAtAge(src, checkAge, retirementAge = null) {
+    // ends_at_retirement: only active during the accumulation phase
+    if (src.ends_at_retirement && retirementAge !== null && checkAge >= retirementAge) return false;
+
     const today = new Date();
 
     // — start gate —
@@ -122,7 +131,6 @@ router.get('/expenses', requireAuth, requireProfile, async (req, res) => {
              FROM monthly_expenses e
              WHERE e.user_id = $1
                AND ($2::int IS NULL OR e.profile_id = $2)
-               AND e.is_active = true
 
              ORDER BY category, name`,
             [req.user.id, req.profileId],
@@ -216,6 +224,34 @@ router.put('/expenses/:id', requireAuth, requireProfile, async (req, res) => {
     }
 });
 
+// ─── PATCH /api/cashflow/expenses/:id/toggle ─────────────────────────────────
+
+router.patch('/expenses/:id/toggle', requireAuth, requireProfile, async (req, res) => {
+    try {
+        const { included } = req.body ?? {};
+        if (typeof included !== 'boolean') {
+            return res.status(400).json({ error: 'included must be a boolean' });
+        }
+        const existing = await query(
+            `SELECT id, source FROM monthly_expenses WHERE id = $1 AND user_id = $2`,
+            [req.params.id, req.user.id],
+        );
+        if (!existing.rowCount) return res.status(404).json({ error: 'Expense not found' });
+        if (existing.rows[0].source === 'real_estate') {
+            return res.status(400).json({ error: 'Toggle RE mortgage expenses via the Real Estate page' });
+        }
+        const { rows } = await query(
+            `UPDATE monthly_expenses SET is_active = $3, updated_at = NOW()
+             WHERE id = $1 AND user_id = $2
+             RETURNING *`,
+            [req.params.id, req.user.id, included],
+        );
+        return res.json(rows[0]);
+    } catch (err) {
+        return res.status(500).json({ error: err.message || 'Failed to toggle expense' });
+    }
+});
+
 // ─── DELETE /api/cashflow/expenses/:id ───────────────────────────────────────
 
 router.delete('/expenses/:id', requireAuth, requireProfile, async (req, res) => {
@@ -305,7 +341,7 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
         let todayNet   = 0;
 
         for (const src of incomeSources) {
-            if (!isActiveAtAge(src, currentAge)) continue;
+            if (!isActiveAtAge(src, currentAge, retirementAge)) continue;
             const net   = Number(src.monthly_amount) || 0;
             const gross = src.gross_monthly_amount ? Number(src.gross_monthly_amount) : null;
             todaySources.push({ name: src.name, type: src.income_type, gross, net });
@@ -330,7 +366,7 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
         let retireTaxable = 0;
 
         for (const src of incomeSources) {
-            if (!isActiveAtAge(src, retirementAge)) continue;
+            if (!isActiveAtAge(src, retirementAge, retirementAge)) continue;
             const fromAge = src.start_type === 'age' ? (Number(src.start_age) || currentAge) : currentAge;
             const net     = Math.round(projected(src.monthly_amount,       src, fromAge, retirementAge) * 100) / 100;
             const grossRaw = src.gross_monthly_amount

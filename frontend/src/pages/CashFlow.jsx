@@ -11,6 +11,8 @@ import {
   X,
 } from 'lucide-react';
 
+import IncludeToggle from '../components/shared/IncludeToggle';
+
 import apiClient from '../api/client';
 import Skeleton from '../components/shared/Skeleton';
 import { Button } from '../components/ui/button';
@@ -282,8 +284,8 @@ function IncomeColumn({ sources, totalGross, totalNet, view, retirementAge }) {
 
 // ─── expenses column ──────────────────────────────────────────────────────────
 
-function ExpensesColumn({ items, byCategory, total, view, onAdd, onEdit, onDelete }) {
-  // Group by category
+function ExpensesColumn({ items, byCategory, total, view, onAdd, onEdit, onDelete, onToggle }) {
+  // Group by category — show all items (including excluded ones)
   const grouped = useMemo(() => {
     const groups = {};
     for (const item of items) {
@@ -316,38 +318,49 @@ function ExpensesColumn({ items, byCategory, total, view, onAdd, onEdit, onDelet
                 <span className="ml-auto text-slate-400">{formatCurrency(byCategory[cat] || 0)}</span>
               </div>
               <div className="space-y-1">
-                {group.map((item, i) => (
-                  <div
-                    key={i}
-                    className="group flex items-center gap-2 rounded-md px-3 py-2 hover:bg-slate-800/60"
-                  >
-                    <span className="flex-1 truncate text-sm text-slate-300">{item.name}</span>
-                    {item.source === 'real_estate' && (
-                      <span className="text-xs text-slate-600 shrink-0">🏠 RE</span>
-                    )}
-                    <span className="shrink-0 text-sm font-medium text-slate-200">
-                      {formatCurrency(item.monthly_amount)}
-                    </span>
-                    {item.source !== 'real_estate' ? (
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          type="button"
-                          onClick={() => onEdit(item)}
-                          className="text-slate-500 hover:text-sky-400"
-                        >
-                          <Pencil size={13} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onDelete(item.id)}
-                          className="text-slate-500 hover:text-red-400"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    ) : <div className="w-9" />}
-                  </div>
-                ))}
+                {group.map((item, i) => {
+                  const isExcluded = item.is_active === false;
+                  const isManual   = item.source !== 'real_estate';
+                  return (
+                    <div
+                      key={i}
+                      className={`group flex items-center gap-2 rounded-md px-3 py-2 hover:bg-slate-800/60 transition-opacity ${isExcluded ? 'opacity-50' : ''}`}
+                    >
+                      <span className={`flex-1 truncate text-sm ${isExcluded ? 'text-slate-500 line-through' : 'text-slate-300'}`}>
+                        {item.name}
+                      </span>
+                      {item.source === 'real_estate' && (
+                        <span className="text-xs text-slate-600 shrink-0">🏠 RE</span>
+                      )}
+                      <span className={`shrink-0 text-sm font-medium ${isExcluded ? 'text-slate-500 line-through' : 'text-slate-200'}`}>
+                        {formatCurrency(item.monthly_amount)}
+                      </span>
+                      {isManual ? (
+                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <IncludeToggle
+                            included={!isExcluded}
+                            onToggle={(val) => onToggle(item, val)}
+                            size="sm"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onEdit(item)}
+                            className="text-slate-500 hover:text-sky-400 p-1"
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDelete(item.id)}
+                            className="text-slate-500 hover:text-red-400 p-1"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ) : <div className="w-9" />}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           );
@@ -447,6 +460,15 @@ export default function CashFlow() {
     },
   });
 
+  const toggleExpenseMutation = useMutation({
+    mutationFn: async ({ id, included }) =>
+      apiClient.patch(`/cashflow/expenses/${id}/toggle`, { included }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cashflow-expenses'] });
+      queryClient.invalidateQueries({ queryKey: ['cashflow-summary'] });
+    },
+  });
+
   // ── derived data ───────────────────────────────────────────────────────────
 
   const summary = summaryQuery.data;
@@ -458,6 +480,12 @@ export default function CashFlow() {
   const expSection   = section?.expenses;
   const disposable   = section?.disposable ?? 0;
   const savingsRate  = isToday ? (summary?.today?.savingsRate ?? 0) : null;
+
+  // Expense items for display: use expensesQuery (includes excluded items) for Today view;
+  // At Retirement view uses the summary's filtered items (only continuing & active).
+  const displayExpenseItems = isToday
+    ? expenses
+    : (expSection?.items ?? []);
 
   // For loading skeleton
   const isLoading = summaryQuery.isLoading || expensesQuery.isLoading;
@@ -617,13 +645,14 @@ export default function CashFlow() {
               )}
             </div>
             <ExpensesColumn
-              items={expSection?.items ?? []}
+              items={displayExpenseItems}
               byCategory={expSection?.byCategory ?? {}}
               total={expSection?.total ?? 0}
               view={view}
               onAdd={() => setModal('new')}
               onEdit={(item) => setModal(item)}
               onDelete={handleDelete}
+              onToggle={(item, included) => toggleExpenseMutation.mutate({ id: item.id, included })}
             />
           </Card>
         </div>
@@ -665,7 +694,7 @@ export default function CashFlow() {
       )}
 
       {/* Empty state if nothing at all */}
-      {!isLoading && !summary?.today?.income?.sources?.length && !expenses.length && (
+      {!isLoading && !summary?.today?.income?.sources?.length && !displayExpenseItems.length && (
         <Card className="py-12 text-center">
           <p className="text-slate-400 text-sm">
             No data yet. <Link to="/income" className="text-sky-400 hover:underline">Add income sources</Link> and
