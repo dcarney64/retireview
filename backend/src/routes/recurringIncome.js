@@ -7,6 +7,19 @@ import { query } from '../db/client.js';
 const router = Router();
 
 const INCOME_TYPES  = ['social_security','pension','annuity','rental','employment','other'];
+
+// ─── helper: total liquid portfolio for a user/profile ────────────────────────
+
+async function liquidPortfolioTotal(userId, profileId = null) {
+    const result = await query(
+        `SELECT COALESCE(SUM(balance), 0) AS total
+         FROM accounts
+         WHERE user_id = $1 AND include_in_tracking = true AND archived_at IS NULL
+           AND ($2::int IS NULL OR profile_id = $2)`,
+        [userId, profileId],
+    );
+    return Number(result.rows[0].total);
+}
 const START_TYPES   = ['now','age','date'];
 const END_TYPES     = ['lifetime','age','date','years'];
 const TAX_TYPES     = ['taxable','tax_deferred','tax_free'];
@@ -156,7 +169,8 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
         );
 
         const { rows: scenarios } = await query(
-            `SELECT current_age, retirement_age
+            `SELECT current_age, retirement_age, withdrawal_rate,
+                    pre_retirement_return, annual_spending_goal, starting_portfolio
              FROM retirement_scenarios
              WHERE user_id = $1 AND is_active = true
                AND ($2::int IS NULL OR profile_id = $2)
@@ -164,25 +178,24 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
              LIMIT 1`,
             [req.user.id, req.profileId],
         );
-        const currentAge    = Number(scenarios[0]?.current_age)    || 62;
-        const retirementAge = Number(scenarios[0]?.retirement_age) || 67;
+        const currentAge        = Number(scenarios[0]?.current_age)    || 62;
+        const retirementAge     = Number(scenarios[0]?.retirement_age) || 67;
+        const yearsToRetirement = Math.max(0, retirementAge - currentAge);
+
+        // ── Backward-compat summary fields ────────────────────────────────────
 
         let currentMonthly    = 0;
         let retirementMonthly = 0;
         const breakdown        = [];
         const byType           = {};
-        let totalTaxable   = 0;
-        let totalTaxFree   = 0;
+        let totalTaxable       = 0;
+        let totalTaxFree       = 0;
 
         for (const s of sources) {
-            const computed    = addComputed(s, currentAge, retirementAge);
-            const startAge    = computed.resolvedStartAge;
-            const endAge      = computed.resolvedEndAge;
+            const computed = addComputed(s, currentAge, retirementAge);
+            const endAge   = computed.resolvedEndAge;
 
-            if (computed.isCurrentlyActive) {
-                currentMonthly += Number(s.monthly_amount);
-            }
-
+            if (computed.isCurrentlyActive) currentMonthly += Number(s.monthly_amount);
             retirementMonthly += computed.monthlyAtRetirement;
 
             const note =
@@ -195,37 +208,139 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
                         : null;
 
             breakdown.push({
-                id:           s.id,
-                name:         s.name,
-                type:         s.income_type,
-                monthly:      computed.monthlyAtRetirement,
-                taxTreatment: s.tax_treatment,
+                id: s.id, name: s.name, type: s.income_type,
+                monthly: computed.monthlyAtRetirement, taxTreatment: s.tax_treatment,
                 ...(note ? { note } : {}),
             });
 
             byType[s.income_type] = (byType[s.income_type] || 0) + computed.monthlyAtRetirement;
 
-            if (s.tax_treatment === 'taxable')      totalTaxable += computed.monthlyAtRetirement;
-            if (s.tax_treatment === 'tax_free')     totalTaxFree  += computed.monthlyAtRetirement;
+            if (s.tax_treatment === 'taxable') totalTaxable += computed.monthlyAtRetirement;
+            if (s.tax_treatment === 'tax_free') totalTaxFree += computed.monthlyAtRetirement;
         }
 
-        // Ensure all types present in byType
         for (const t of INCOME_TYPES) {
             if (!(t in byType)) byType[t] = 0;
         }
 
+        // ── Pre-retirement: sources active NOW (at currentAge) ─────────────────
+
+        const preRetirementSources = [];
+        let preMonthlyNet   = 0;
+        let preMonthlyGross = 0;
+
+        for (const s of sources) {
+            if (!isActiveAtAge(s, currentAge, retirementAge)) continue;
+            const net   = Number(s.monthly_amount);
+            const gross = s.gross_monthly_amount ? Number(s.gross_monthly_amount) : net;
+            preRetirementSources.push({
+                id:           s.id,
+                name:         s.name,
+                type:         s.income_type,
+                monthlyNet:   Math.round(net   * 100) / 100,
+                monthlyGross: Math.round(gross * 100) / 100,
+                endsAt:       s.ends_at_retirement ? 'retirement'
+                              : s.end_type === 'age' ? `age ${s.end_age}`
+                              : s.end_type,
+                startsAt:     s.start_type === 'age' ? Number(s.start_age) : null,
+                isActive:     true,
+            });
+            preMonthlyNet   += net;
+            preMonthlyGross += gross;
+        }
+
+        // ── Post-retirement: sources active AT retirement ───────────────────────
+
+        const postRetirementSources = [];
+        let postMonthlyNet   = 0;
+        let postMonthlyGross = 0;
+
+        for (const s of sources) {
+            if (!isActiveAtAge(s, retirementAge, retirementAge)) continue;
+            const fromAge = s.start_type === 'age'
+                ? (Number(s.start_age) || currentAge)
+                : currentAge;
+            const net   = projectedAmount(s, fromAge, retirementAge);
+            // Project gross separately (reuse the helper by temporarily swapping monthly_amount)
+            const gross = s.gross_monthly_amount
+                ? projectedAmount({ ...s, monthly_amount: Number(s.gross_monthly_amount) }, fromAge, retirementAge)
+                : net;
+            postRetirementSources.push({
+                id:           s.id,
+                name:         s.name,
+                type:         s.income_type,
+                monthlyNet:   Math.round(net   * 100) / 100,
+                monthlyGross: Math.round(gross * 100) / 100,
+                startsAt:     s.start_type === 'age' ? Number(s.start_age) : null,
+                endsAt:       s.end_type === 'age' ? Number(s.end_age) : null,
+                isActive:     true,
+            });
+            postMonthlyNet   += net;
+            postMonthlyGross += gross;
+        }
+
+        // ── Gap calculator ─────────────────────────────────────────────────────
+
+        const spendingGoal   = Number(scenarios[0]?.annual_spending_goal) / 12 || 0;
+        const withdrawalRate = Number(scenarios[0]?.withdrawal_rate)        || 4.0;
+        const preReturnPct   = Number(scenarios[0]?.pre_retirement_return)  || 7.0;
+
+        let startingPortfolio = scenarios[0]?.starting_portfolio != null
+            ? Number(scenarios[0].starting_portfolio)
+            : null;
+        if (startingPortfolio === null) {
+            startingPortfolio = await liquidPortfolioTotal(req.user.id, req.profileId);
+        }
+
+        const guaranteedIncome     = postMonthlyNet;
+        const monthlyGap           = Math.max(0, spendingGoal - guaranteedIncome);
+        const portfolioNeeded      = withdrawalRate > 0
+            ? (monthlyGap * 12) / (withdrawalRate / 100)
+            : 0;
+        const portfolioProjected   = startingPortfolio
+            * Math.pow(1 + preReturnPct / 100, yearsToRetirement);
+        const isOnTrack            = portfolioProjected >= portfolioNeeded;
+        const surplusOrDeficit     = portfolioProjected - portfolioNeeded;
+        const monthlyFromPortfolio = monthlyGap;  // amount portfolio needs to cover monthly
+        const totalMonthlyAtRetirement = guaranteedIncome + monthlyFromPortfolio;
+
         return res.json({
-            currentMonthly:   Math.round(currentMonthly * 100) / 100,
+            // ── New structured fields ──────────────────────────────────────────
+            retirementAge,
+            currentAge,
+            yearsToRetirement,
+            preRetirement: {
+                sources:           preRetirementSources,
+                totalMonthlyNet:   Math.round(preMonthlyNet   * 100) / 100,
+                totalMonthlyGross: Math.round(preMonthlyGross * 100) / 100,
+            },
+            postRetirement: {
+                sources:           postRetirementSources,
+                totalMonthlyNet:   Math.round(postMonthlyNet   * 100) / 100,
+                totalMonthlyGross: Math.round(postMonthlyGross * 100) / 100,
+            },
+            gapCalculator: {
+                monthlySpendingGoal:            Math.round(spendingGoal          * 100) / 100,
+                guaranteedMonthlyIncome:         Math.round(guaranteedIncome      * 100) / 100,
+                monthlyGap:                      Math.round(monthlyGap           * 100) / 100,
+                portfolioNeeded:                 Math.round(portfolioNeeded       * 100) / 100,
+                portfolioProjectedAtRetirement:  Math.round(portfolioProjected    * 100) / 100,
+                isOnTrack,
+                surplusOrDeficit:                Math.round(surplusOrDeficit      * 100) / 100,
+                withdrawalRate,
+                monthlyFromPortfolio:            Math.round(monthlyFromPortfolio  * 100) / 100,
+                totalMonthlyAtRetirement:        Math.round(totalMonthlyAtRetirement * 100) / 100,
+            },
+            // ── Backward-compat fields ─────────────────────────────────────────
+            currentMonthly:  Math.round(currentMonthly   * 100) / 100,
             atRetirement: {
-                monthly:  Math.round(retirementMonthly * 100) / 100,
+                monthly:  Math.round(retirementMonthly     * 100) / 100,
                 annual:   Math.round(retirementMonthly * 12 * 100) / 100,
                 breakdown,
             },
             byType,
-            totalTaxable:     Math.round(totalTaxable * 100) / 100,
-            totalTaxFree:     Math.round(totalTaxFree * 100) / 100,
-            currentAge,
-            retirementAge,
+            totalTaxable:    Math.round(totalTaxable * 100) / 100,
+            totalTaxFree:    Math.round(totalTaxFree * 100) / 100,
         });
     } catch (err) {
         return res.status(500).json({ error: err.message || 'Failed to load income summary' });

@@ -230,9 +230,13 @@ function IncomeColumn({ sources, totalGross, totalNet, view, retirementAge }) {
     );
   }
 
+  // Separate portfolio withdrawal from regular sources for special rendering
+  const regularSources   = sources.filter((s) => !s.isPortfolio);
+  const portfolioSource  = sources.find((s) => s.isPortfolio);
+
   return (
-    <div className="space-y-3">
-      {sources.map((src, i) => {
+    <div className="space-y-2">
+      {regularSources.map((src, i) => {
         const hasGross  = src.gross != null;
         const typeLabel = INCOME_TYPE_LABELS[src.type] || src.type;
         return (
@@ -244,9 +248,7 @@ function IncomeColumn({ sources, totalGross, totalNet, view, retirementAge }) {
               </div>
               <div className="text-right shrink-0">
                 {hasGross && (
-                  <div className="text-xs text-slate-500">
-                    Gross: {formatCurrency(src.gross)}
-                  </div>
+                  <div className="text-xs text-slate-500">Gross: {formatCurrency(src.gross)}</div>
                 )}
                 <div className="font-semibold text-sky-300">{formatCurrency(src.net)}</div>
                 {hasGross && (
@@ -260,12 +262,29 @@ function IncomeColumn({ sources, totalGross, totalNet, view, retirementAge }) {
         );
       })}
 
+      {/* Portfolio withdrawal (retirement view only) */}
+      {portfolioSource && (
+        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="font-medium text-emerald-300 truncate">{portfolioSource.name}</div>
+              <div className="text-xs text-slate-500">Investment portfolio</div>
+            </div>
+            <div className="font-semibold text-emerald-300 shrink-0">
+              {formatCurrency(portfolioSource.net)}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Total row */}
-      <div className="rounded-lg border border-slate-700 px-4 py-3 mt-2">
+      <div className="rounded-lg border border-slate-700 px-4 py-3 mt-1">
         <div className="flex justify-between text-sm">
-          <span className="font-medium text-slate-300">Total</span>
+          <span className="font-medium text-slate-300">
+            {portfolioSource ? 'Total (incl. portfolio)' : 'Total'}
+          </span>
           <div className="text-right">
-            {totalGross !== totalNet && (
+            {!portfolioSource && totalGross !== totalNet && (
               <div className="text-xs text-slate-500">Gross: {formatCurrency(totalGross)}</div>
             )}
             <div className="font-bold text-sky-300">{formatCurrency(totalNet)}/mo</div>
@@ -275,9 +294,53 @@ function IncomeColumn({ sources, totalGross, totalNet, view, retirementAge }) {
 
       {view === 'retirement' && retirementAge && (
         <p className="text-xs text-slate-500 text-center">
-          Income projected at retirement age {retirementAge}
+          Projected at age {retirementAge} · includes estimated tax deduction
         </p>
       )}
+    </div>
+  );
+}
+
+// ─── transition panel ─────────────────────────────────────────────────────────
+
+function TransitionPanel({ transitionSummary }) {
+  if (!transitionSummary?.changes?.length && !transitionSummary?.portfolioCoverage) return null;
+
+  const { changes, netChange, portfolioCoverage } = transitionSummary;
+  const stops  = changes.filter((c) => c.change < 0);
+  const starts = changes.filter((c) => c.change > 0);
+
+  return (
+    <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 px-5 py-4 text-sm">
+      <div className="mb-3 font-semibold text-sky-300">At retirement your income changes:</div>
+      <div className="space-y-1.5">
+        {stops.map((c, i) => (
+          <div key={i} className="flex justify-between">
+            <span className="text-slate-400">{c.name} ends</span>
+            <span className="font-medium tabular-nums text-rose-400">{formatCurrency(c.change)}/mo</span>
+          </div>
+        ))}
+        {starts.map((c, i) => (
+          <div key={i} className="flex justify-between">
+            <span className="text-slate-400">{c.name} starts</span>
+            <span className="font-medium tabular-nums text-emerald-400">+{formatCurrency(c.change)}/mo</span>
+          </div>
+        ))}
+        {(stops.length > 0 || starts.length > 0) && (
+          <div className="flex justify-between border-t border-slate-700 pt-1.5 font-medium">
+            <span className="text-slate-300">Net income change</span>
+            <span className={`tabular-nums ${netChange >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {netChange >= 0 ? '+' : ''}{formatCurrency(netChange)}/mo
+            </span>
+          </div>
+        )}
+        {portfolioCoverage > 0 && (
+          <div className="flex justify-between text-emerald-300/80">
+            <span>Portfolio covers</span>
+            <span className="tabular-nums">+{formatCurrency(portfolioCoverage)}/mo</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -474,12 +537,17 @@ export default function CashFlow() {
   const summary = summaryQuery.data;
   const expenses = expensesQuery.data || [];
 
-  const isToday      = view === 'today';
-  const section      = isToday ? summary?.today : summary?.atRetirement;
-  const income       = section?.income;
-  const expSection   = section?.expenses;
-  const disposable   = section?.disposable ?? 0;
-  const savingsRate  = isToday ? (summary?.today?.savingsRate ?? 0) : null;
+  const isToday          = view === 'today';
+  const section          = isToday ? summary?.today : summary?.atRetirement;
+  const income           = section?.income;
+  const expSection       = section?.expenses;
+  const disposable       = section?.disposable ?? 0;
+  const savingsRate      = isToday ? (summary?.today?.savingsRate ?? 0) : null;
+  const transitionData   = summary?.atRetirement?.transitionSummary;
+  // In retirement view show the total-with-portfolio income figure
+  const displayIncomeNet = !isToday
+    ? (income?.totalWithPortfolio ?? income?.net ?? 0)
+    : (income?.net ?? 0);
 
   // Expense items for display: use expensesQuery (includes excluded items) for Today view;
   // At Retirement view uses the summary's filtered items (only continuing & active).
@@ -490,7 +558,7 @@ export default function CashFlow() {
   // For loading skeleton
   const isLoading = summaryQuery.isLoading || expensesQuery.isLoading;
 
-  const barMax = Math.max(income?.net ?? 0, income?.gross ?? 0, 1);
+  const barMax = Math.max(displayIncomeNet, income?.gross ?? 0, 1);
 
   const handleDelete = (id) => {
     if (window.confirm('Delete this expense?')) {
@@ -565,11 +633,13 @@ export default function CashFlow() {
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <StatCard
-            label="Monthly Income (net)"
-            main={formatCurrency(income?.net ?? 0)}
-            sub={income?.gross && income.gross !== income.net
-              ? `Gross: ${formatCurrency(income.gross)}`
-              : undefined}
+            label={isToday ? 'Monthly Income (net)' : 'Monthly Income (incl. portfolio)'}
+            main={formatCurrency(displayIncomeNet)}
+            sub={!isToday && income?.portfolioWithdrawal
+              ? `Guaranteed: ${formatCurrency(income.net ?? 0)} + Portfolio: ${formatCurrency(income.portfolioWithdrawal)}`
+              : (income?.gross && income.gross !== income.net
+                ? `Gross: ${formatCurrency(income.gross)}`
+                : undefined)}
           />
           <StatCard
             label="Monthly Expenses"
@@ -589,6 +659,11 @@ export default function CashFlow() {
       {/* At-retirement tax banner */}
       {!isToday && !isLoading && summary?.taxEstimate && (
         <TaxBanner estimate={summary.taxEstimate} />
+      )}
+
+      {/* At-retirement transition summary */}
+      {!isToday && !isLoading && (
+        <TransitionPanel transitionSummary={transitionData} />
       )}
 
       {/* Two-column layout */}
@@ -622,7 +697,7 @@ export default function CashFlow() {
             <IncomeColumn
               sources={income?.sources ?? []}
               totalGross={income?.gross ?? 0}
-              totalNet={income?.net ?? 0}
+              totalNet={displayIncomeNet}
               view={view}
               retirementAge={summary?.atRetirement?.retirementAge}
             />
@@ -667,8 +742,8 @@ export default function CashFlow() {
           </h2>
           <div className="space-y-3">
             <FlowBar
-              label="Net income"
-              value={income.net ?? 0}
+              label={isToday ? 'Net income' : 'Income (total)'}
+              value={displayIncomeNet}
               max={barMax}
               color="#38bdf8"
             />

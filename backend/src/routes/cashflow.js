@@ -283,9 +283,10 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
     try {
         const filingStatus = req.query.filingStatus === 'married' ? 'married' : 'single';
 
-        // Age data from active retirement scenario
+        // Age data + financial params from active retirement scenario
         const { rows: scenarios } = await query(
-            `SELECT current_age, retirement_age
+            `SELECT current_age, retirement_age, withdrawal_rate,
+                    pre_retirement_return, annual_spending_goal, starting_portfolio
              FROM retirement_scenarios
              WHERE user_id = $1 AND is_active = true
                AND ($2::int IS NULL OR profile_id = $2)
@@ -294,6 +295,25 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
         );
         const currentAge    = Number(scenarios[0]?.current_age)    || 62;
         const retirementAge = Number(scenarios[0]?.retirement_age) || 67;
+
+        // Portfolio projection at retirement (simple compound growth)
+        const withdrawalRate  = Number(scenarios[0]?.withdrawal_rate)        || 4.0;
+        const preReturnPct    = Number(scenarios[0]?.pre_retirement_return)   || 7.0;
+        const yearsToRetire   = Math.max(0, retirementAge - currentAge);
+        let startingPortfolio = scenarios[0]?.starting_portfolio != null
+            ? Number(scenarios[0].starting_portfolio) : null;
+        if (startingPortfolio === null) {
+            const { rows: accts } = await query(
+                `SELECT COALESCE(SUM(balance), 0) AS total
+                 FROM accounts
+                 WHERE user_id = $1 AND include_in_tracking = true AND archived_at IS NULL
+                   AND ($2::int IS NULL OR profile_id = $2)`,
+                [req.user.id, req.profileId],
+            );
+            startingPortfolio = Number(accts[0].total);
+        }
+        const portfolioAtRetirement       = Math.round(startingPortfolio * Math.pow(1 + preReturnPct / 100, yearsToRetire));
+        const monthlyPortfolioWithdrawal  = Math.round(portfolioAtRetirement * (withdrawalRate / 100) / 12);
 
         // All active recurring income sources
         const { rows: incomeSources } = await query(
@@ -379,12 +399,24 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
             if (src.tax_treatment === 'taxable') retireTaxable += net;
         }
 
-        // Simple tax estimate on taxable retirement income
+        // Simple tax estimate on taxable guaranteed retirement income
         const annualTax        = calcAnnualTax(retireTaxable * 12, filingStatus);
         const monthlyTax       = Math.round(annualTax / 12 * 100) / 100;
         const effectiveRate    = retireTaxable > 0
             ? Math.round((annualTax / (retireTaxable * 12)) * 1000) / 10 : 0;
         const retireNet        = Math.max(0, retireNetPre - monthlyTax);
+
+        // Portfolio withdrawal added on top of guaranteed income (not taxed here — complex)
+        if (monthlyPortfolioWithdrawal > 0) {
+            retireSources.push({
+                name:        `Portfolio Withdrawal (${withdrawalRate}% rule)`,
+                type:        'portfolio',
+                gross:       null,
+                net:         monthlyPortfolioWithdrawal,
+                isPortfolio: true,
+            });
+        }
+        const retireNetWithPortfolio = retireNet + monthlyPortfolioWithdrawal;
 
         // Expenses at retirement — only continuing items
         const retireExpItems = allExpenses
@@ -396,6 +428,30 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
         for (const e of retireExpItems) {
             retireByCategory[e.category] = (retireByCategory[e.category] || 0) + e.monthly_amount;
         }
+
+        // ── Transition summary (what changes at retirement) ───────────────────
+
+        const transitionChanges = [];
+        for (const src of incomeSources) {
+            const activeNow      = isActiveAtAge(src, currentAge, retirementAge);
+            const activeAtRetire = isActiveAtAge(src, retirementAge, retirementAge);
+            if (activeNow && !activeAtRetire) {
+                transitionChanges.push({
+                    name: src.name, type: src.income_type,
+                    change: -Math.round(Number(src.monthly_amount) * 100) / 100,
+                    reason: 'ends at retirement',
+                });
+            } else if (!activeNow && activeAtRetire) {
+                const fromAge = src.start_type === 'age' ? (Number(src.start_age) || currentAge) : currentAge;
+                const amount  = Math.round(projected(src.monthly_amount, src, fromAge, retirementAge) * 100) / 100;
+                transitionChanges.push({
+                    name: src.name, type: src.income_type,
+                    change: amount,
+                    reason: 'starts at retirement',
+                });
+            }
+        }
+        const netTransitionChange = transitionChanges.reduce((s, c) => s + c.change, 0);
 
         return res.json({
             today: {
@@ -414,20 +470,29 @@ router.get('/summary', requireAuth, requireProfile, async (req, res) => {
             },
             atRetirement: {
                 income: {
-                    gross:        Math.round(retireGross  * 100) / 100,
-                    netPreTax:    Math.round(retireNetPre * 100) / 100,
-                    estimatedTax: monthlyTax,
-                    net:          Math.round(retireNet    * 100) / 100,
-                    sources:      retireSources,
+                    gross:               Math.round(retireGross            * 100) / 100,
+                    netPreTax:           Math.round(retireNetPre           * 100) / 100,
+                    estimatedTax:        monthlyTax,
+                    net:                 Math.round(retireNet              * 100) / 100,
+                    portfolioWithdrawal: monthlyPortfolioWithdrawal,
+                    totalWithPortfolio:  Math.round(retireNetWithPortfolio * 100) / 100,
+                    sources:             retireSources,
+                    portfolioAtRetirement,
+                    withdrawalRate,
                 },
                 expenses: {
                     total:      Math.round(retireExpTotal * 100) / 100,
                     byCategory: retireByCategory,
                     items:      retireExpItems,
                 },
-                disposable:   Math.round((retireNet - retireExpTotal) * 100) / 100,
+                disposable:    Math.round((retireNetWithPortfolio - retireExpTotal) * 100) / 100,
                 currentAge,
                 retirementAge,
+                transitionSummary: {
+                    changes:          transitionChanges,
+                    netChange:        Math.round(netTransitionChange     * 100) / 100,
+                    portfolioCoverage: monthlyPortfolioWithdrawal,
+                },
             },
             taxEstimate: {
                 filingStatus,

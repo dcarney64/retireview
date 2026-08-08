@@ -637,8 +637,11 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
   const maxAge = 95;
   const range  = maxAge - minAge;
 
-  const toLeft  = (age) => `${(Math.max(0, Math.min(age, maxAge) - minAge) / range) * 100}%`;
-  const toWidth = (s, e) => `${(Math.max(0, Math.min(e, maxAge) - Math.max(s, minAge)) / range) * 100}%`;
+  const toLeftPct = (age) => (Math.max(0, Math.min(age, maxAge) - minAge) / range) * 100;
+  const toLeft    = (age) => `${toLeftPct(age)}%`;
+  const toWidth   = (s, e) => `${(Math.max(0, Math.min(e, maxAge) - Math.max(s, minAge)) / range) * 100}%`;
+
+  const retireLeftPct = toLeftPct(retirementAge);
 
   const ageMarkers = [];
   for (let a = Math.ceil(minAge / 5) * 5; a <= maxAge; a += 5) ageMarkers.push(a);
@@ -658,35 +661,61 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
       </div>
       <div className="space-y-1.5">
         {activeSources.map((src) => {
-          const meta           = rtMeta(src.income_type);
-          const rawStart       = src.start_type === 'now' ? currentAge : (src.resolvedStartAge ?? currentAge);
-          // ends_at_retirement: bar ends exactly at the retirement marker
-          const rawEnd         = src.ends_at_retirement ? retirementAge : (src.resolvedEndAge ?? maxAge);
-          const isPreRetire    = Boolean(src.ends_at_retirement);
-          const isHovered      = hovered === src.id;
+          const meta        = rtMeta(src.income_type);
+          const rawStart    = src.start_type === 'now' ? currentAge : (src.resolvedStartAge ?? currentAge);
+          const rawEnd      = src.ends_at_retirement ? retirementAge : (src.resolvedEndAge ?? maxAge);
+          const isPreOnly   = Boolean(src.ends_at_retirement);
+          const isPostOnly  = !src.ends_at_retirement && rawStart >= retirementAge;
+          const isHovered   = hovered === src.id;
+
+          // Blue for pre-only, green for post-only, type color for spanning sources
+          const barColor = isPreOnly ? '#60a5fa' : isPostOnly ? '#34d399' : meta.color;
+
           return (
             <div key={src.id} className="flex items-center gap-3">
               <div className="w-36 shrink-0 truncate text-xs text-slate-400" title={src.name}>
                 <span className="mr-1">{meta.icon}</span>
                 {src.name}
               </div>
-              <div className="relative h-5 flex-1 rounded bg-slate-800">
-                <div className="absolute top-0 h-full w-px bg-sky-500/50"    style={{ left: toLeft(currentAge) }} />
-                <div className="absolute top-0 h-full w-px bg-emerald-500/40" style={{ left: toLeft(retirementAge) }} />
+              {/* Track with phase-colored background bands */}
+              <div
+                className="relative h-5 flex-1 rounded overflow-hidden"
+                style={{
+                  background: `linear-gradient(to right,
+                    rgba(59,130,246,0.06) 0%, rgba(59,130,246,0.06) ${retireLeftPct}%,
+                    rgba(16,185,129,0.06) ${retireLeftPct}%, rgba(16,185,129,0.06) 100%)`,
+                }}
+              >
+                {/* Current-age marker */}
+                <div
+                  className="absolute top-0 h-full w-0.5 bg-sky-500/50"
+                  style={{ left: toLeft(currentAge) }}
+                />
+                {/* Retirement-age marker — dashed, prominent */}
+                <div
+                  className="absolute top-0 h-full"
+                  style={{
+                    left:             toLeft(retirementAge),
+                    width:            '2px',
+                    background:       'repeating-linear-gradient(to bottom, #34d399 0, #34d399 4px, transparent 4px, transparent 7px)',
+                    zIndex:           2,
+                  }}
+                />
+                {/* Income bar */}
                 <div
                   className="absolute top-0.5 h-4 rounded cursor-pointer transition-opacity"
                   style={{
                     left:            toLeft(rawStart),
                     width:           toWidth(rawStart, rawEnd),
-                    backgroundColor: meta.color,
-                    opacity:         isHovered ? 1 : (isPreRetire ? 0.45 : 0.75),
-                    // dashed border on pre-retirement-only bars to signal they stop at retirement
-                    outline:         isPreRetire ? `2px dashed ${meta.color}` : 'none',
+                    backgroundColor: barColor,
+                    opacity:         isHovered ? 1 : (isPreOnly ? 0.55 : 0.75),
+                    outline:         isPreOnly ? `2px dashed ${barColor}` : 'none',
                     outlineOffset:   '-2px',
+                    zIndex:          1,
                   }}
                   onMouseEnter={() => setHovered(src.id)}
                   onMouseLeave={() => setHovered(null)}
-                  title={`${src.name}: ${formatCurrency(src.monthly_amount)}/mo${isPreRetire ? ' — pre-retirement only' : ''}`}
+                  title={`${src.name}: ${formatCurrency(src.monthly_amount)}/mo${isPreOnly ? ' — pre-retirement only' : ''}`}
                 />
               </div>
               <div className="w-24 shrink-0 text-right text-xs font-medium tabular-nums text-slate-300">
@@ -696,16 +725,34 @@ function IncomeTimeline({ sources, currentAge, retirementAge }) {
           );
         })}
       </div>
-      <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500">
+
+      {/* Phase labels */}
+      <div className="mt-3 ml-36 mr-24 flex text-xs text-slate-600 select-none" aria-hidden>
+        <span
+          className="text-sky-600/60 font-medium"
+          style={{ width: `${retireLeftPct}%`, textAlign: 'center', overflow: 'hidden' }}
+        >
+          ◀ pre-retirement
+        </span>
+        <span
+          className="text-emerald-600/60 font-medium"
+          style={{ flex: 1, textAlign: 'center', overflow: 'hidden' }}
+        >
+          post-retirement ▶
+        </span>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-sky-500/50" /> Now (age {currentAge})
+          <span className="inline-block h-2 w-0.5 bg-sky-500/60" /> Now (age {currentAge})
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-500/40" /> Retirement (age {retirementAge})
+          <span className="inline-block h-3 w-0.5 bg-emerald-400/70" style={{ background: 'repeating-linear-gradient(to bottom,#34d399 0,#34d399 3px,transparent 3px,transparent 5px)' }} />
+          Retirement (age {retirementAge})
         </span>
         {activeSources.some((s) => s.ends_at_retirement) && (
           <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2 w-2 rounded-sm border border-slate-500 opacity-60" /> Pre-retirement only (dashed)
+            <span className="inline-block h-2 w-6 rounded-sm border border-sky-400/50" /> Pre-only (dashed)
           </span>
         )}
       </div>
@@ -954,6 +1001,225 @@ function SummaryCard({ label, value, suffix, highlight, dim }) {
   );
 }
 
+// ─── classify source into pre / post retirement sections ─────────────────────
+
+function classifySource(src, currentAge, retireAge) {
+  // Resolve start age: 'now' → already active; 'age' → explicit; 'date' → treat as active
+  const startAge = src.start_type === 'now'  ? 0
+    : src.start_type === 'age' ? (Number(src.start_age) || 0)
+    : 0;  // date-based: assume active
+
+  const endsAtRetire = Boolean(src.ends_at_retirement);
+
+  // End age: explicit age, or null (lifetime/unknown)
+  const endAge = endsAtRetire ? retireAge
+    : src.end_type === 'age' ? (Number(src.end_age) || null)
+    : null;
+
+  // isPre: currently active (started, not yet ended)
+  const isPre = startAge <= currentAge && (
+    endsAtRetire
+      ? currentAge < retireAge          // employment: active now, stops at retirement
+      : (endAge === null || endAge > currentAge)
+  );
+
+  // isPost: not ends-at-retirement AND extends into/through retirement
+  const isPost = !endsAtRetire && (endAge === null || endAge > retireAge);
+
+  return { isPre, isPost };
+}
+
+// ─── INCOME SECTION (themed pre/post container) ───────────────────────────────
+
+function IncomeSection({
+  title, subtitle, theme, sources,
+  totalNet, totalLabel,
+  currentAge, retirementAge,
+  onAdd, onEdit, onDelete, onToggle,
+}) {
+  const isBlue = theme === 'blue';
+  const c = isBlue ? {
+    wrap:    'border-sky-500/20 bg-sky-500/[0.04]',
+    title:   'text-sky-300',
+    total:   'text-sky-300',
+    addBtn:  'border-sky-500/30 text-sky-500 hover:bg-sky-500/10 hover:text-sky-400',
+    empty:   'text-sky-500/70',
+    divider: 'border-sky-500/15',
+  } : {
+    wrap:    'border-emerald-500/20 bg-emerald-500/[0.04]',
+    title:   'text-emerald-300',
+    total:   'text-emerald-300',
+    addBtn:  'border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10 hover:text-emerald-400',
+    empty:   'text-emerald-500/70',
+    divider: 'border-emerald-500/15',
+  };
+
+  return (
+    <div className={`rounded-xl border ${c.wrap} px-5 py-4`}>
+      {/* Section header */}
+      <div className="flex items-start justify-between mb-3">
+        <div>
+          <h3 className={`text-sm font-semibold ${c.title}`}>{title}</h3>
+          <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          className={`flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${c.addBtn}`}
+        >
+          <Plus size={12} /> Add
+        </button>
+      </div>
+
+      {/* Source cards */}
+      {sources.length === 0 ? (
+        <div className="py-6 text-center text-sm text-slate-600">
+          No sources added yet.{' '}
+          <button type="button" onClick={onAdd} className={`${c.empty} hover:underline`}>
+            Add one →
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sources.map((src) => (
+            <IncomeCard
+              key={src.id}
+              src={src}
+              currentAge={currentAge}
+              retirementAge={retirementAge}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onToggle={onToggle}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Section total */}
+      {sources.length > 0 && (
+        <div className={`mt-3 pt-3 border-t ${c.divider} flex items-center justify-between`}>
+          <span className="text-xs text-slate-500">{totalLabel}</span>
+          <span className={`text-sm font-semibold tabular-nums ${c.total}`}>
+            {formatCurrency(totalNet)}/mo net
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── GAP CALCULATOR (retirement readiness panel) ──────────────────────────────
+
+function GapCalculator({ data, retirementAge }) {
+  if (!data || !data.monthlySpendingGoal) return null;
+
+  const {
+    isOnTrack, monthlySpendingGoal, guaranteedMonthlyIncome,
+    monthlyGap, portfolioNeeded, portfolioProjectedAtRetirement,
+    surplusOrDeficit, withdrawalRate, monthlyFromPortfolio,
+    totalMonthlyAtRetirement,
+  } = data;
+
+  return (
+    <div className={`rounded-xl border p-5 ${
+      isOnTrack ? 'border-emerald-500/20 bg-emerald-500/[0.04]'
+                : 'border-rose-500/20 bg-rose-500/[0.04]'
+    }`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <span className="text-xl leading-none">🎯</span>
+          <h3 className="font-semibold text-slate-100">Retirement Readiness</h3>
+        </div>
+        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+          isOnTrack ? 'bg-emerald-500/15 text-emerald-400'
+                    : 'bg-rose-500/15 text-rose-400'
+        }`}>
+          {isOnTrack ? '✅ On Track' : '⚠️ Gap Exists'}
+        </span>
+      </div>
+
+      {/* Monthly waterfall */}
+      <div className="space-y-1.5 text-sm">
+        <div className="flex justify-between">
+          <span className="text-slate-400">Monthly spending goal</span>
+          <span className="font-medium tabular-nums text-slate-200">{formatCurrency(monthlySpendingGoal)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-400">Guaranteed income</span>
+          <span className="tabular-nums text-emerald-400">−{formatCurrency(guaranteedMonthlyIncome)}</span>
+        </div>
+        <div className="flex justify-between border-t border-slate-700/60 pt-2 font-medium">
+          <span className="text-slate-300">Monthly gap (from portfolio)</span>
+          <span className={`tabular-nums ${monthlyGap > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {monthlyGap > 0 ? formatCurrency(monthlyGap) : '✓ None'}
+          </span>
+        </div>
+      </div>
+
+      {/* Portfolio check */}
+      <div className="mt-4 space-y-1.5 text-sm">
+        <div className="flex justify-between">
+          <span className="text-slate-500">Portfolio needed ({withdrawalRate}% rule)</span>
+          <span className="tabular-nums text-slate-400">{formatCurrency(portfolioNeeded)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-slate-400">Portfolio at retirement (est.)</span>
+          <span className="tabular-nums font-medium text-slate-200">{formatCurrency(portfolioProjectedAtRetirement)}</span>
+        </div>
+        <div className={`flex justify-between border-t border-slate-700/60 pt-2 font-semibold ${
+          isOnTrack ? 'text-emerald-400' : 'text-rose-400'
+        }`}>
+          <span>{isOnTrack ? 'Surplus' : 'Shortfall'}</span>
+          <span className="tabular-nums">
+            {isOnTrack ? '+' : ''}{formatCurrency(surplusOrDeficit)}
+            {isOnTrack ? ' ✅' : ''}
+          </span>
+        </div>
+      </div>
+
+      {/* Total monthly breakdown */}
+      <div className="mt-4 rounded-lg bg-slate-800/50 p-3.5">
+        <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+          Total monthly at retirement
+        </div>
+        <div className="space-y-1.5 text-sm">
+          <div className="flex justify-between text-slate-400">
+            <span>Guaranteed income</span>
+            <span className="tabular-nums">{formatCurrency(guaranteedMonthlyIncome)}</span>
+          </div>
+          <div className="flex justify-between text-slate-400">
+            <span>Portfolio ({withdrawalRate}% rule)</span>
+            <span className="tabular-nums">{formatCurrency(monthlyFromPortfolio)}</span>
+          </div>
+          <div className="flex justify-between border-t border-slate-700 pt-2 font-bold text-slate-100">
+            <span>Total</span>
+            <span className="tabular-nums">{formatCurrency(totalMonthlyAtRetirement)}/mo</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Not-on-track suggestions */}
+      {!isOnTrack && (
+        <div className="mt-4 rounded-lg border border-rose-500/20 bg-rose-500/5 p-3 text-sm">
+          <div className="mb-1.5 font-medium text-rose-400">Suggestions to close the gap:</div>
+          <ul className="space-y-1 text-slate-400">
+            <li>• Increase savings rate or reduce spending</li>
+            <li>• Delay retirement 1–3 years to grow the portfolio</li>
+            <li>• Add a guaranteed income source (annuity, pension)</li>
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-3 text-center">
+        <a href="/retirement" className="text-xs text-sky-400 hover:underline">
+          Adjust in Retirement Settings →
+        </a>
+      </div>
+    </div>
+  );
+}
+
 // ─── RECURRING SOURCES TAB ────────────────────────────────────────────────────
 
 function RecurringSourcesTab() {
@@ -995,6 +1261,16 @@ function RecurringSourcesTab() {
   const summary    = summaryQuery.data;
   const currentAge = summary?.currentAge    || 62;
   const retireAge  = summary?.retirementAge || 67;
+  const yearsLeft  = summary?.yearsToRetirement ?? Math.max(0, retireAge - currentAge);
+
+  // Classify every source into pre / post (or both) sections
+  const { preSources, postSources } = useMemo(() => ({
+    preSources:  sources.filter((s) => classifySource(s, currentAge, retireAge).isPre),
+    postSources: sources.filter((s) => classifySource(s, currentAge, retireAge).isPost),
+  }), [sources, currentAge, retireAge]);
+
+  const activeSources = sources.filter((s) => s.is_active);
+  const excludedCount = sources.filter((s) => !s.is_active).length;
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['recurring-income'] });
@@ -1002,175 +1278,114 @@ function RecurringSourcesTab() {
     setModal(null);
   };
 
-  // Group by type — ALL 6 types always present (even if empty)
-  const grouped = useMemo(() => {
-    const map = new Map();
-    for (const t of RECURRING_TYPES) map.set(t.value, []);
-    for (const s of sources) {
-      if (map.has(s.income_type)) map.get(s.income_type).push(s);
-      else map.get('other').push(s);
-    }
-    return [...map.entries()]; // no filter — show all sections
-  }, [sources]);
-
-  const activeSources = sources.filter((s) => s.is_active);
-
-  // Detect if this modal open is an edit (has .id) vs new
-  const modalInitial    = modal?.id ? modal : null;
-  const modalDefault    = modal?.defaultType || modal?.income_type || 'social_security';
+  const modalInitial = modal?.id        ? modal                                       : null;
+  const modalDefault = modal?.defaultType || modal?.income_type || 'social_security';
+  const isLoading    = sourcesQuery.isLoading || summaryQuery.isLoading;
 
   return (
     <>
-      {/* Summary bar */}
-      {summaryQuery.isLoading ? (
-        <div className="grid grid-cols-3 gap-4">
-          {[0, 1, 2].map((i) => (
-            <Card key={i} className="p-4">
-              <Skeleton className="h-4 w-24" />
-              <Skeleton className="mt-2 h-7 w-32" />
-            </Card>
-          ))}
-        </div>
+      {/* ── Header summary bar ─────────────────────────────────────────────── */}
+      {isLoading ? (
+        <Card className="p-5"><Skeleton className="h-14 w-full" /></Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <SummaryCard
-            label="Active now"
-            value={summary?.currentMonthly ?? 0}
-            suffix="/mo"
-            dim={activeSources.filter((s) => s.isCurrentlyActive).length === 0}
-          />
-          <SummaryCard
-            label={`At retirement (age ${retireAge})`}
-            value={summary?.atRetirement?.monthly ?? 0}
-            suffix="/mo"
-            highlight
-          />
-          <SummaryCard
-            label="Annual at retirement"
-            value={summary?.atRetirement?.annual ?? 0}
-            suffix="/yr"
-          />
+        <div className="rounded-xl border border-slate-700 bg-slate-800/40 px-5 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap gap-8">
+              {/* Today */}
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wider text-slate-500">Today</div>
+                <div className="mt-1 flex items-baseline gap-1.5">
+                  <span className="text-2xl font-bold tabular-nums text-slate-100">
+                    {formatCurrency(summary?.preRetirement?.totalMonthlyNet ?? summary?.currentMonthly ?? 0)}
+                  </span>
+                  <span className="text-sm text-slate-500">/mo net</span>
+                </div>
+              </div>
+              {/* At retirement */}
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wider text-slate-500">
+                  At Retirement (age {retireAge})
+                </div>
+                <div className="mt-1 flex items-baseline gap-1.5">
+                  <span className="text-2xl font-bold tabular-nums text-emerald-300">
+                    {formatCurrency(summary?.gapCalculator?.totalMonthlyAtRetirement ?? summary?.atRetirement?.monthly ?? 0)}
+                  </span>
+                  <span className="text-sm text-slate-500">/mo total</span>
+                </div>
+              </div>
+            </div>
+            {yearsLeft > 0 && (
+              <div className="text-center">
+                <div className="text-3xl font-bold tabular-nums text-sky-300">{yearsLeft}</div>
+                <div className="text-xs text-slate-500">years to retirement</div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Excluded-source warning */}
-      {sources.some((s) => !s.is_active) && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-400">
-          <AlertCircle size={14} className="shrink-0" />
-          {sources.filter((s) => !s.is_active).length} source
-          {sources.filter((s) => !s.is_active).length > 1 ? 's' : ''} excluded from projections (what-if).
-          Retirement income without them:{' '}
-          <span className="font-medium">{formatCurrency(summary?.atRetirement?.monthly ?? 0)}/mo</span>
-        </div>
-      )}
-
-      {/* Timeline */}
-      {sourcesQuery.isLoading ? (
-        <Card><Skeleton className="h-32 w-full" /></Card>
-      ) : activeSources.length > 0 ? (
+      {/* ── Timeline ──────────────────────────────────────────────────────── */}
+      {!isLoading && activeSources.length > 0 && (
         <Card>
           <IncomeTimeline sources={activeSources} currentAge={currentAge} retirementAge={retireAge} />
         </Card>
-      ) : null}
+      )}
+      {isLoading && <Card><Skeleton className="h-32 w-full" /></Card>}
 
-      {/* Retirement breakdown */}
-      {(summary?.atRetirement?.breakdown?.length ?? 0) > 0 && (
-        <Card>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
-            At Retirement — Breakdown
-          </h3>
-          <div className="space-y-1.5">
-            {summary.atRetirement.breakdown.map((b) => {
-              const meta = rtMeta(b.type);
-              return (
-                <div key={b.id} className="flex items-center gap-3 text-sm">
-                  <span className="text-base leading-none">{meta.icon}</span>
-                  <span className="flex-1 text-slate-300">{b.name}</span>
-                  {b.note && <span className="text-xs text-slate-600">{b.note}</span>}
-                  <span className="w-24 text-right font-medium tabular-nums"
-                        style={{ color: b.monthly > 0 ? meta.color : '#475569' }}>
-                    {b.monthly > 0 ? `${formatCurrency(b.monthly)}/mo` : '—'}
-                  </span>
-                </div>
-              );
-            })}
-            <div className="mt-2 flex items-center gap-3 border-t border-slate-800 pt-2 text-sm font-semibold">
-              <span className="flex-1 text-slate-300">Total guaranteed</span>
-              <span className="w-24 text-right tabular-nums text-sky-300">
-                {formatCurrency(summary.atRetirement.monthly)}/mo
-              </span>
-            </div>
-          </div>
-        </Card>
+      {/* ── Section 1: Pre-Retirement ─────────────────────────────────────── */}
+      {isLoading ? (
+        <Card><Skeleton className="h-28 w-full" /></Card>
+      ) : (
+        <IncomeSection
+          title="Pre-Retirement Income"
+          subtitle={`Active now · ends at or before retirement (age ${retireAge})`}
+          theme="blue"
+          sources={preSources}
+          totalNet={summary?.preRetirement?.totalMonthlyNet ?? 0}
+          totalLabel="Total pre-retirement income"
+          currentAge={currentAge}
+          retirementAge={retireAge}
+          onAdd={() => setModal({ defaultType: 'employment' })}
+          onEdit={(s) => setModal(s)}
+          onDelete={(id) => deleteMutation.mutate(id)}
+          onToggle={(s, included) => toggleMutation.mutate({ src: s, included })}
+        />
       )}
 
-      {/* ── All 6 type sections — always shown ── */}
-      {sourcesQuery.isLoading ? (
-        <Card><Skeleton className="h-24 w-full" /></Card>
+      {/* ── Section 2: Post-Retirement ────────────────────────────────────── */}
+      {isLoading ? (
+        <Card><Skeleton className="h-28 w-full" /></Card>
       ) : (
-        <div className="space-y-6">
-          {grouped.map(([type, group]) => {
-            const meta = rtMeta(type);
-            return (
-              <div key={type}>
-                {/* Section header */}
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base leading-none">{meta.icon}</span>
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      {meta.label}
-                    </h3>
-                    {group.length > 0 && (
-                      <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-xs text-slate-500">
-                        {group.length}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setModal({ defaultType: type })}
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-sky-500 hover:bg-sky-500/10 hover:text-sky-400 transition-colors"
-                  >
-                    <Plus size={12} /> Add
-                  </button>
-                </div>
+        <IncomeSection
+          title="Post-Retirement Income"
+          subtitle={`Starts at or continues through retirement (age ${retireAge})`}
+          theme="green"
+          sources={postSources}
+          totalNet={summary?.postRetirement?.totalMonthlyNet ?? 0}
+          totalLabel="Total guaranteed at retirement"
+          currentAge={currentAge}
+          retirementAge={retireAge}
+          onAdd={() => setModal({ defaultType: 'social_security' })}
+          onEdit={(s) => setModal(s)}
+          onDelete={(id) => deleteMutation.mutate(id)}
+          onToggle={(s, included) => toggleMutation.mutate({ src: s, included })}
+        />
+      )}
 
-                {/* Section body */}
-                {group.length === 0 ? (
-                  <div className="flex items-center justify-between rounded-lg border border-dashed border-slate-800 px-4 py-3">
-                    <span className="text-sm text-slate-600">
-                      No {meta.label.toLowerCase()} income added yet
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setModal({ defaultType: type })}
-                      className="flex items-center gap-1 text-xs text-sky-500 hover:text-sky-400"
-                    >
-                      <Plus size={12} /> Add
-                    </button>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {group.map((src) => (
-                      <IncomeCard
-                        key={src.id}
-                        src={src}
-                        currentAge={currentAge}
-                        retirementAge={retireAge}
-                        onEdit={(s) => setModal(s)}
-                        onDelete={(id) => deleteMutation.mutate(id)}
-                        onToggle={(s, included) => toggleMutation.mutate({ src: s, included })}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+      {/* ── Section 3: Gap Calculator ─────────────────────────────────────── */}
+      {!isLoading && summary?.gapCalculator && (
+        <GapCalculator data={summary.gapCalculator} retirementAge={retireAge} />
+      )}
+
+      {/* ── Excluded-source notice ────────────────────────────────────────── */}
+      {excludedCount > 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-400">
+          <AlertCircle size={14} className="shrink-0" />
+          {excludedCount} source{excludedCount > 1 ? 's' : ''} excluded from projections (what-if scenario).
         </div>
       )}
 
-      {/* Modal */}
+      {/* ── Modal ──────────────────────────────────────────────────────────── */}
       {modal !== null && (
         <IncomeModal
           initial={modalInitial}
